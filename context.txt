@@ -1,0 +1,1045 @@
+==========================================================
+Implicit Keeps You DRY: Safe Context Management for Python
+==========================================================
+
+>>> from peak.util import context
+
+.. contents:: **Table of Contents**
+
+
+--------------------------
+Basic and Convenience APIs
+--------------------------
+
+
+Translating the "with" Statement to Python 2.4
+==============================================
+
+The "with" statement is planned for inclusion in Python 2.5, but this API is
+intended to be usable with Python 2.4.  So, we include a couple of functions
+that let you emulate most of the "with" statement's functionality in Python
+2.4.  Here's a simple translation table::
+
+    Python 2.5+               Python 2.4
+    ------------              -------------
+    with x as y:              @context.call_with(x)
+        print y               def do_it(y):
+                                  print y
+
+    with x as y:              z = context.with_(x,f)
+        z = f(y)
+
+    @contextmanager           @context.manager
+    def transacted():         def transacted():
+        begin_txn()               begin_txn()
+        try:                      yield None
+            yield                 typ, val, tb = context.gen_exc_info()
+        except:                   if typ is not None:
+            abort_txn()               abort_txn()
+        else:                         del typ, val, tb
+            commit_txn()          else:
+                                      commit_txn()
+
+The biggest difference between these constructs (apart from performance) is
+that the "with" statement lets you rebind variables in the surrounding scope,
+because the code in the block is still in the same scope.  Since our emulation
+for Python 2.4 uses functions, they can't rebind variables from the surrounding
+scope, and thus must make do with side effects and/or return values.
+
+Notice also that we allow definition of context managers using generators, much
+like in Python 2.5, but if you need to get at the error status within the
+generator, you must use a special helper function (``gen_exc_info()``), because
+Python 2.4 can't pass values or errors into a running generator the way 2.5
+can.
+
+
+Managing Configuration using ``Setting`` Objects
+================================================
+
+One of the most common needs for "context" in a program is for its
+configuration.  We define a "configuration" as a semi-immutable collection of
+setting-value pairs.  A value can be defined for a given setting at most once
+in a given configuration; it cannot be changed once it is established.  This
+ensures that configurations are both consistent and thread-safe, preventing
+any possibility of two different pieces of code acting on a different value for
+the setting.
+
+You can of course create, use, and switch between configurations at any time,
+but for a given configuration, each setting can have at most one value over the
+life of that configuration.  (One additional benefit of this approach is that
+it makes it easier to delineate when your program's configuration has changed;
+we'll say more about this later.  XXX what?)
+
+
+Defining Settings
+-----------------
+
+Setting objects are created by passing in a name, a default value, and a
+docstring:
+
+    >>> s1 = context.Setting("s1", 42, doc="just an example")
+
+Note that the default value will be shared by all threads, so settings should
+always use immutable, stateless, or threadsafe objects as their defaults.
+
+The return value of ``Setting`` is a function object, that will appear to have
+been defined in the module that called ``setting()``:
+
+    >>> s1
+    <function s1...>
+
+The function takes one optional argument:
+
+    >>> help(s1)
+    Help on function s1:
+    ...
+    s1(arg=<object object>)
+        just an example
+    ...
+
+And when called with no arguments, it returns the setting's value in the
+current execution context.  This value will be the same as the default value,
+unless you have activated a new configuration that overrides the default:
+
+    >>> s1()
+    42
+
+If you create a setting without a default, the "default default" is None.  The
+default name is "setting", and there is a default docstring as well for your
+convenience:
+
+    >>> s2 = context.Setting()
+
+    >>> print s2()
+    None
+
+    >>> help(s2)
+    Help on function setting:
+    ...
+    setting(arg=<object object>)
+        A context.Setting that was defined without a docstring
+    ...
+        Call with zero arguments to get its value in the current scope, or with
+        one argument to change the setting to the passed-in value.  Note that
+        settings may only be changed once in a given scope, and then only if
+        they have not been read within that scope.  Settings that are read
+        without having been set inherit their value from the parent
+        configuration of the current configuration.
+    ...
+
+Finally, note that you can specify a ``module`` argument to make a setting
+appear to have been defined in the specified module.  This is sometimes useful
+when creating settings dynamically:
+
+    >>> s3 = context.Setting('s3', doc="example", module="distutils.util")
+    >>> help(s3)
+    Help on function s3 in module distutils.util:
+    ...
+    s3(arg=<object object>)
+        example
+    ...
+
+
+Using Settings
+--------------
+
+Let's create a couple of "favorites" settings, and some code that displays
+their current value:
+
+    >>> favorite_number = context.Setting("favorite_number", 42)
+    >>> favorite_color  = context.Setting("favorite_color",  "blue")
+
+    >>> def show_favorites(*args):
+    ...     print "favorite color:", favorite_color()
+    ...     print "favorite number:", favorite_number()
+
+    >>> show_favorites()
+    favorite color: blue
+    favorite number: 42
+
+Now let's try changing our favorite number:
+
+    >>> favorite_number(43)
+    Traceback (most recent call last):
+      ...
+    SettingConflict: a different value for favorite_number is already defined
+
+As you can see, we're not allowed to change a setting that already has a value
+in the current configuration.  So, we're going to need to create a new
+configuration in which we can change the values.  We do this using a
+``with context.Config():`` statement, or rather the closest we can get to that
+using Python 2.4:
+
+    >>> @context.call_with(context.Config())
+    ... def do_it(arg):
+    ...     favorite_number(27)
+    ...     favorite_color("burnt umber")
+    ...     show_favorites()
+    favorite color: burnt umber
+    favorite number: 27
+
+    >>> show_favorites()
+    favorite color: blue
+    favorite number: 42
+
+As you can see, our ``show_favorites()`` function picks up the redefined
+values, but only within the block where the new configuration was active.
+
+
+Configuration Objects
+---------------------
+
+Note that you can create and save individual configurations, and re-enter them
+at any time.  Here, we'll create two configurations, and change one setting in
+each, then show the values of the settings in each configuration:
+
+    >>> c1 = context.Config()
+    >>> c2 = context.Config()
+
+    >>> context.with_(c1, lambda arg: favorite_number(8))
+    >>> context.with_(c2, lambda arg: favorite_color("forest green"))
+    
+    >>> context.with_(c1, show_favorites)   # with c1: show_favorites()
+    favorite color: blue
+    favorite number: 8
+
+    >>> context.with_(c2, show_favorites)   # with c2: show_favorites()
+    favorite color: forest green
+    favorite number: 42
+
+Notice that each configuration inherits the default values for the settings
+that weren't overridden in that configuration.  However, once the values have
+been looked up, you can no longer change them within that configuration:
+
+    >>> context.with_(c1, lambda arg: favorite_color("bright yellow"))
+    Traceback (most recent call last):
+      ...
+    SettingConflict: a different value for favorite_color is already defined
+
+This is because as soon as the value has been looked up, then some part of your
+program is relying on the value that was found.  If the value changed later,
+another part of your program would then be thinking the value is different.
+
+
+But you are allowed to repeatedly assign the *same* value to a setting, whether
+it was inherited or overridden in that configuration:
+
+    >>> context.with_(c1, lambda arg: favorite_color("blue"))
+    >>> context.with_(c1, lambda arg: favorite_number(8))
+    >>> context.with_(c1, lambda arg: favorite_color("blue"))
+    >>> context.with_(c1, lambda arg: favorite_number(8))
+
+The idea here is that it's okay for multiple sources (or threads) to supply the
+same value for a setting, but it's not okay for there to be conflicting values,
+because that would mean that some code is using one value and other code is
+using a different value.  In general, such problems are why global variables
+have such a bad reputation, as it is very difficult to debug something when
+different parts of the code are seeing different values for the same setting.
+So, the conflict detection logic used by ``context.Config`` objects guarantees
+that for a given configuration, all values are consistent, and anything that
+would make the configuration inconsistent is detected and rejected.
+
+(Notice, by the way, that this is also why *reading* a setting is enough to
+prevent it from being changed.  The fact that someone has read the value means
+they may be relying upon that value, so it can't then be changed, because now
+the configuration would be inconsistent.)
+
+By the way, you do not need to enter a configuration scope in order to read or
+write settings into it directly:
+
+    >>> c1[favorite_color]
+    'blue'
+
+    >>> c2[favorite_number] = 42
+
+    >>> c2[favorite_number] = 43
+    Traceback (most recent call last):
+      ...
+    SettingConflict: a different value for favorite_number is already defined
+
+In other words, setting objects can be used as keys to set or retrieve values
+in a given configuration.  Note that configurations do *not* provide any other
+mapping features besides reading or writing the values of a setting.
+
+
+Configuration Inheritance
+-------------------------
+
+``Config`` objects have a ``parent`` attribute that points to the ``Config``
+they inherit values from:
+
+    >>> c1.parent
+    <...context.Config object at ...>
+
+    >>> c2.parent
+    <...context.Config object at ...>
+
+When you create a new ``Config``, its ``parent`` attribute is set to the
+currently active ``Config``:
+
+    >>> @context.call_with(c1)
+    ... def do_it(arg):
+    ...     print context.Config().parent is c1
+    True
+
+unless you specify an explicit parent configuration when you create the
+configuration:
+
+    >>> c3 = context.Config(c2)
+    >>> c3.parent is c2
+    True
+
+You can also obtain the currently active configuration by calling
+``Config.current()``:
+
+    >>> print context.Config.current()
+    <...context.Config object at ...>
+
+The default current configuration is ``Config.root``, which is a special
+``Config`` instance that holds the default values of all settings:
+
+    >>> context.Config.current() is context.Config.root
+    True
+
+The root configuration is used as the base configuration for every physical
+or logical thread -- which is another one of the reasons why the settings
+within a given configuration can't be changed, and why settings should only
+have "stateless" values, like immutable objects or functions and classes.
+Stateful objects should managed using "Resources" instead, as fresh resources
+are created for each thread on an as-needed basis, and can sometimes even be
+pooled for safe reuse across multiple threads.
+
+
+Managing State and Operations using ``Resource`` and ``Action`` Objects
+=======================================================================
+
+Typical programs either perform a single logical operation (e.g. console
+scripts), or loop performing various actions (e.g. servers and GUI programs).
+During each logical operation, various kinds of state typically need to be
+tracked for that operation, including resource allocations and release of those
+resources when the operation is finished.  Often, if an operation fails, there
+may be some kind of rollback, and if it succeeds, there may need to be steps
+taken to finalize the results.
+
+``context.Action`` and ``context.Resource`` objects help you organize your
+program's logical operations and resource management by letting you delineate
+the scope of an operation and specify how to allocate or release resources
+and handle commit or rollback operations.  You can even use configuration
+settings to control how the resources get created.
+
+Also, because resource instances are created on-demand, you do not have to
+know at the start of an operation what resources will be needed, nor do you
+need to force-fit your resource use into a nested block structure, as you
+would have to if you used ordinary "with:" statements to manage context.
+
+
+Defining Resources
+------------------
+
+A ``Resource`` is a callable used to obtain the current instance of a
+logical resource such as "the database connection" or "the main window".
+When you call a ``Resource`` for the first time in a given logical operation,
+a **resource factory** will be called to create the resource instance, which
+is then cached for future calls.
+
+A resource factory can be a function, class, or any other object that can be
+called with no arguments.  For our examples here, we'll use a class whose
+instances are PEP 343 "context managers", so that you can see how the
+resource management lifecycle works:
+
+    >>> class TestResource(object):
+    ...     @context.manager
+    ...     def __context__(self):
+    ...         print "Setting up"
+    ...         yield self
+    ...         print "Tearing down", map(str,context.gen_exc_info())
+
+    >>> @context.call_with(TestResource())
+    ... def do_it(ob):
+    ...     print ob
+    Setting up
+    <TestResource object ...>
+    Tearing down ['None', 'None', 'None']
+
+As you can see, ``with TestResource() as ob: print ob`` does what we'd expect
+it to, given the ``__context__`` method.  Now let's define a resource using
+this factory:
+
+    >>> res = context.Resource(factory=TestResource)
+
+Resources are created in much the same way as ``Setting`` objects, except that
+the ``factory`` argument is used in place of ``default``.  You can also specify
+a name, docstring, and/or module name, and these all have reasonable defaults
+if you leave them out.
+
+To access a resource, you just call it with no arguments:
+
+    >>> res()
+    Traceback (most recent call last):
+      ...
+    RuntimeError: resource cannot be used outside of ...context.Action scope
+
+Oops!  We're not currently inside of a logical operation (``Action`` scope),
+so we can't get at the resource yet.  Let's look at ``Action`` objects next.
+
+
+Actions
+-------
+
+A ``context.Action`` represents an independent logical operation.  Most
+programs will consist of one or more non-overlapping actions.  By default,
+however, there is no current action:
+
+    >>> print context.Action.current()
+    None
+
+To perform a logical operation, wrap its outermost scope in a "with" block
+using a ``context.Action`` instance:
+
+    >>> @context.call_with(context.Action())
+    ... def demo(arg):
+    ...     print res()
+    ...     r1 = res()
+    ...     r2 = res()
+    ...     print "r1 is r2:", r1 is r2
+    Setting up
+    <TestResource object...>
+    r1 is r2: True
+    Tearing down ['None', 'None', 'None']
+
+As you can see, the first time we tried to access the ``res`` resource during
+the action, the factory was called and the ``TestResource`` context manager
+was initialized.  ``res()`` returned the value yielded by the context manager
+(the ``TestResource`` instance), and this value was cached.  Subsequent calls
+to ``res()`` returned the same object, and when the ``Action`` was exited, the
+``TestResource`` context manager was informed.
+
+
+Factories and Configuration
+---------------------------
+
+You are not limited to using just one factory to create instances of a
+resource.  The ``factory`` argument to ``Resource()`` only specifies the
+*default* factory.  Each ``Action`` instance actually has a configuration
+(``context.Config`` instance) that it uses to determine what factory should
+be used.
+
+In effect, the factory is actually a setting, so you can change it by creating
+a new configuration.  Let's create a new factory, and a configuration in which
+it's the factory for our ``res`` resource:
+
+    >>> c1 = context.Config()
+
+    >>> def my_factory():
+    ...     if context.Config.current() is c1:
+    ...         print "Factory is running in c1"
+    ...     return 42
+
+    >>> context.with_(c1, lambda arg: res(my_factory))
+
+    >>> c1[res]
+    <function my_factory ...>
+
+Notice that calling a ``Resource`` with an argument sets its factory in the
+current configuration, just as calling a ``Setting`` with an argument sets its
+value in the current configuration.  Also notice that just as with settings,
+we can use resources as configuration keys.  They just let you look up or set
+the resource's factory, rather than its "value".
+
+Now that we have a configuration using our new factory, let's perform an
+``Action`` in it:
+
+    >>> @context.call_with(context.Action(c1))  # action using configuration c1
+    ... def do_it(arg):
+    ...     print res()
+    ...     print res()
+    Factory is running in c1
+    42
+    42
+
+As you can see, our new factory function was called, returning 42.  42 isn't
+a context manager, so nothing else special happens.  Our factory also reported
+that it was running in the ``c1`` configuration.  If you're paying close
+attention, you may be wondering *why* it did this, since we never explicitly
+entered the ``c1`` configuration context.
+
+You might think that this is because using the action automatically enters the
+same configuration context, but this is not the case:
+
+    >>> @context.call_with(context.Action(c1))  # action using configuration c1
+    ... def do_it(arg):
+    ...     print context.Config.current() is c1
+    False
+
+What is actually happening is that whenever a resource factory is called, the
+``Action`` temporarily sets the action's configuration to be the current
+configuration.  In this way, all the resource factories for a given action
+will see a consistent configuration, even if the resource factory is
+invoked while from deeply-nested code that's using a different current
+configuration.
+
+
+Convenient Access via ``context.Proxy`` Objects
+===============================================
+
+If you are refactoring code that currently uses module-level globals to hold
+configuration or resources, you may find it inconvenient to have to switch to
+calling ``Setting`` or ``Resource`` functions.  If this is the case, you may
+wish to use ``context.Proxy`` objects to make these functions look like normal
+variables.  For example, let's say that you have some code that assumes
+``favorite_number`` is stored in a global variable:
+
+    >>> def double_your_favorite():
+    ...     print "Double your favorite number is", favorite_number*2
+
+This code won't work with the ``favorite_number`` ``Setting``, because settings
+are functions:
+
+    >>> double_your_favorite()
+    Traceback (most recent call last):
+      ...
+    TypeError: unsupported operand type(s) for *: 'function' and 'int'
+
+We can remedy this by renaming the setting and using a ``Proxy``:
+
+    >>> set_favorite_number = favorite_number
+    >>> favorite_number = context.Proxy(favorite_number)
+
+Now, we have a function to set our favorite number, and an object that looks
+like a normal global variable, but in reality is a proxy that delegates all
+requested operations to the current value of the setting:
+
+    >>> favorite_number
+    42
+
+    >>> double_your_favorite()
+    Double your favorite number is 84
+
+Keep in mind that even though this *looks* like a variable, it really isn't.
+It's just an object that calls the function it was created with, then performs
+any requested operations on the result, instead of on itself.  About the only
+way you can tell the difference between the proxy and the thing it's proxying
+is to use ``type()``:
+
+    >>> type(favorite_number)
+    <class '...context.FunctionProxy'>
+
+But even its ``__class__`` (and ``isinstance()``) will match the underlying
+object:
+
+    >>> favorite_number.__class__
+    <type 'int'>
+
+    >>> isinstance(favorite_number, int)
+    True
+
+And its apparent "value" changes as appropriate to the context; each physical
+or logical thread or execution point can see different values for the "same"
+proxy:
+
+    >>> @context.call_with(context.Config())
+    ... def do_it(arg):
+    ...     set_favorite_number(29)
+    ...     double_your_favorite()
+    Double your favorite number is 58
+
+And virtually any Python operation can be performed on or with the proxy, as if
+it were the current value of the wrapped ``Setting`` or ``Resource``:
+
+    >>> 'X' * favorite_number
+    'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+    >>> hex(favorite_number)
+    '0x2a'
+    >>> chr(favorite_number)
+    '*'
+    >>> favorite_number ^ 1
+    43
+    >>> favorite_number ** 2
+    1764
+
+Proxies aren't limited to wrapping ``Setting`` and ``Resource`` objects,
+however.  They can be used with *any* callable that can be invoked without
+arguments.  Whenever an operation is performed on the proxy, the
+wrapped callable is invoked, and the requested operation is performed on the
+result.
+
+For example, if you wrap an iterator's ``next()`` method in a ``Proxy``, then
+each operation on the proxy will be performed on the next item from the
+iterator.  That's not a very useful thing to do, but it helps to show
+that every operation on a proxy is delegated to the *current* return value of
+the function:
+
+    >>> counter = context.Proxy(iter(range(4)).next)
+    >>> counter
+    0
+    >>> counter
+    1
+    >>> str(counter)
+    '2'
+    >>> hex(counter)
+    '0x3'
+    >>> counter
+    Traceback (most recent call last):
+      ...
+    StopIteration
+
+Nearly all of Python's special methods are supported (about 64 of 79 of them),
+except for the descriptor methods ``__get__``, ``__set__``, and ``__delete__``,
+(which can't be delegated safely) and the in-place methods (which would replace
+the proxy).
+
+
+-----------------
+Advanced Features
+-----------------
+
+Not implemented yet:
+
+* Namespaces
+* Custom Action subclasses
+* Pools
+
+
+Dynamic Parameters using Globals
+================================
+
+A ``context.Global`` is an object that holds a value, local to the current
+logical thread of execution.  Each OS-level thread or Python pseudothread can
+have a different value for the same ``Global`` object.
+
+Globals are created by passing in a name, a default value, and a docstring:
+
+    >>> v = context.Global("v", 42, doc="just an example")
+
+(Note, by the way, that you should always set a global's default value to an
+immutable, stateless, or otherwise thread-safe object, as globals' default
+values are shared by all threads.)
+
+The return value of ``Global`` is a function object, that will appear to have
+been defined in the module that called ``Global()``:
+
+    >>> v
+    <function v at ...>
+
+The function takes one optional argument:
+
+    >>> help(v)
+    Help on function v:
+    ...
+    v(arg=<object object>)
+        just an example
+    ...
+
+And when called with no arguments, it returns the global's value in the
+current execution context (which will initially be the default value):
+
+    >>> v()
+    42
+
+When called with one argument, it returns a PEP 343 context manager that
+temporarily sets the global to the passed-in value:
+
+    >>> @context.call_with(v(99))       # with v(99): ...
+    ... def do_it(arg):
+    ...     print v()
+    99
+
+Once the "with" statement is exited, the global returns to its previous
+value:
+
+    >>> v()
+    42
+
+Even if an error occurs and propagates out of the "with" statement:
+
+    >>> try:
+    ...     @context.call_with(v(57))   # with v(57): ...
+    ...     def do_it(arg):
+    ...         print v()
+    ...         raise ValueError("bar")
+    ... except ValueError:
+    ...     print "caught ValueError"
+    57
+    caught ValueError
+
+    >>> v()
+    42
+
+You can nest "with" statements for the same global, with each block having
+its own value for the global, and each block's view of the value is
+unaffected by either the blocks nested within it, or the blocks it is nested
+in:
+
+    >>> @context.call_with(v(99))   # with v(99): ...
+    ... def do_it(arg):
+    ...     print v()
+    ...     @context.call_with(v(101))  # with v(101): ...
+    ...     def do_it(arg):
+    ...         print v()
+    ...     print v()
+    99
+    101
+    99
+
+    >>> v()
+    42
+
+If you do not supply a name, default value, or docstring when creating a
+global, default ones will be supplied for you:
+
+    >>> v2 = context.Global()
+
+    >>> help(v2)
+    Help on function unnamed_global:
+    ...
+    unnamed_global(arg=<object object>)
+        A context.Global that was defined without a docstring
+    ...
+        Call with zero arguments to get its value, or with one argument to
+        receive a contextmanager that temporarily sets the global to the
+        passed-in value, for the duration of the "with:" block it's used to
+        create.
+    ...
+
+    >>> print v2()  # The "default default" is None
+    None
+    
+Finally, if you want to pretend that a global was defined in some other
+module (this is sometimes useful when creating globals dynamically), you can
+pass in a module name:
+
+    >>> v3 = context.Global("foo", doc="example", module="distutils.util")
+    >>> help(v3)
+    Help on function foo in module distutils.util:
+    ...
+    foo(arg=<object object>)
+        example
+    ...
+
+
+Controlling the Execution State
+===============================
+
+>>> c1 = context.snapshot()
+>>> c2 = context.snapshot()
+
+>>> c1 is c2    # snapshots without any changes between them are identical
+True
+
+>>> foo = context.Global("foo")
+>>> foo("bar").__enter__()  # kludge to set foo() = "bar" in current context
+
+>>> print foo()
+bar
+
+>>> c3 = context.snapshot()
+>>> c1 is c3    # but once there's a change, it's a new snapshot
+False
+>>> print foo()
+bar
+
+>>> c4 = context.swap(c1)   # swap returns the current snapshot and replaces it
+>>> c4 is c3                # no changes since c3, so it's the same object
+True
+
+>>> print foo()         # and our state now matches the snapshot at c1
+None
+
+>>> c1 = context.swap(c3)   # reactivate "foo"
+>>> print foo()
+bar
+>>> c5 = context.new()      # create a new, empty context
+>>> c6 = context.swap(c5)
+>>> c6 is c3
+True
+>>> print foo()         # back to empty
+None
+
+
+
+--------------------------------
+Implementation Details and Tests
+--------------------------------
+
+This section exists just to explain and test various internal implementation
+detail
+
+
+PEP 343 Implementation Tests
+============================
+
+An example context manager:
+
+    >>> @context.manager
+    ... def demo_manager(value):
+    ...     print "before"
+    ...     yield value
+    ...     t, v, tb = context.gen_exc_info()
+    ...     print "after (", t, v, tb, ")"
+
+Applied to a simple function usign ``call_with()``:
+
+    >>> @context.call_with(demo_manager(99))
+    ... def something(ob):
+    ...     print "got", ob
+    ...     return 42
+    before
+    got 99
+    after ( None None None )
+
+And the return value ends up bound under the same name as the function:
+
+    >>> something
+    42
+
+Errors in the called function get passed to ``__exit__()`` and reraised:
+
+    >>> try:
+    ...     @context.call_with(demo_manager(57))
+    ...     def fail(ob):
+    ...         raise TypeError("foo")
+    ... except TypeError:
+    ...     print "caught TypeError"
+    before
+    after ( exceptions.TypeError foo <traceback object at...> )
+    caught TypeError
+
+And the function name is of course not bound or rebound:
+
+    >>> fail
+    Traceback (most recent call last):
+      ...
+    NameError: name 'fail' is not defined
+
+An object's ``__context__`` method can return a separate context manager that will
+be used instead of itself:
+
+    >>> class AltManager(object):
+    ...     def __context__(self):
+    ...         return demo_manager(None)
+
+And that returned object will get its ``__enter__`` and ``__exit__`` called:
+
+    >>> @context.call_with(AltManager())
+    ... def something(ob):
+    ...     print "got", ob
+    before
+    got None
+    after ( None None None )
+
+You don't have to decorate a new function to use ``call_with`` or ``with_()``:
+
+    >>> def something(ob):
+    ...     print "got", ob
+    ...     return 42
+
+Just wrap the context object, then pass the result the function to call:
+
+    >>> context.call_with(AltManager())(something)
+    before
+    got None
+    after ( None None None )
+    42
+
+Or use ``with_()``, passing in the context and the function in one call:
+
+    >>> context.with_(AltManager(),something)
+    before
+    got None
+    after ( None None None )
+    42
+
+Finally, notice that ``__enter__`` may return a different object, which will be
+passed in to the called function as its sole argument:
+
+    >>> context.call_with(demo_manager(99))(something)
+    before
+    got 99
+    after ( None None None )
+    42
+
+    >>> context.with_(demo_manager(99),something)
+    before
+    got 99
+    after ( None None None )
+    42
+
+
+Config Object Tests
+===================
+
+    >>> cfg = context.Config()
+    >>> s = context.Setting("s", default=42)
+    >>> cfg[s]
+    42
+    >>> cfg[s]=43
+    Traceback (most recent call last):
+      ...
+    SettingConflict: a different value for s is already defined
+
+    >>> cfg[s]=42
+
+    >>> cfg = context.Config()
+    >>> cfg[s] = 43
+    >>> cfg[s]
+    43
+
+    >>> print context.Config.current()
+    <...context.Config object at ...>
+
+    >>> print context.Config.current() is context.Config.root
+    True
+
+    >>> @context.call_with(cfg)
+    ... def nested(arg):
+    ...     print context.Config.current()
+    ...     return context.Config()     # should pick up cfg as parent
+    <...context.Config object at ...>
+
+    >>> nested.parent is cfg
+    True
+
+    >>> alt = context.Config(parent=nested)
+    >>> alt.parent is nested
+    True
+
+    >>> nested[s] = 49
+    >>> alt[s]
+    49
+
+    >>> alt[59]
+    Traceback (most recent call last):
+      ...
+    AssertionError: Invalid Setting object or Config() hierarchy
+
+
+Action Tests
+============
+
+    >>> print context.Action.current()
+    None
+    
+    >>> cfg = context.Config()
+    >>> act = context.Action()
+
+    >>> class TestResource(object):
+    ...     @context.manager
+    ...     def __context__(self):
+    ...         print "Setting up"
+    ...         yield self
+    ...         print "Tearing down", map(str,context.gen_exc_info())
+
+    >>> res = context.Resource(factory=TestResource)
+
+    >>> res()
+    Traceback (most recent call last):
+      ...
+    RuntimeError: resource cannot be used outside of ...context.Action scope
+    
+    >>> act.__context__() is act
+    True
+
+    >>> act.__enter__()
+    >>> context.Action.current() is act
+    True
+
+    >>> act.__enter__()
+    Traceback (most recent call last):
+      ...
+    RuntimeError: Action is already in use
+
+    >>> res()
+    Setting up
+    <TestResource object...>
+
+    >>> r1 = res()
+    >>> r2 = res()
+    >>> r1 is r2
+    True
+
+    >>> act.__exit__(None,None,None)
+    Tearing down ['None', 'None', 'None']
+
+    >>> print context.Action.current()
+    None
+
+    >>> act.__exit__(None,None,None)
+    Traceback (most recent call last):
+      ...
+    RuntimeError: Action is not currently in use
+    
+    >>> act.__enter__()
+    >>> res()
+    Setting up
+    <TestResource object...>
+
+    >>> r3 = res()
+    >>> r4 = res()
+    >>> r3 is r4
+    True
+    >>> r3 is r2
+    False
+
+    >>> act.__exit__(TypeError,TypeError("Foo"),None)
+    Tearing down ['exceptions.TypeError', 'Foo', 'None']
+
+    >>> c1 = context.Config()
+    >>> def my_factory():
+    ...     if context.Config.current() is c1:
+    ...         print "Factory running in c1"
+    ...     return 42
+    >>> context.with_(c1, lambda arg: res(my_factory))
+
+    >>> c1[res]
+    <function my_factory ...>
+
+    >>> act = context.Action(c1)
+    >>> act.__enter__()
+    >>> res()
+    Factory running in c1
+    42
+    >>> res()
+    42
+
+    >>> class Failure(object):
+    ...     def __context__(self): return self
+    ...     def __enter__(self): raise RuntimeError("Foo!")
+    ...     def __exit__(self,*exc):
+    ...         raise AssertionError("This shouldn't get called!")
+    
+    >>> res2 = context.Resource(factory=Failure)
+    >>> res2()
+    Traceback (most recent call last):
+      ...
+    RuntimeError: Foo!
+
+    >>> act.__exit__(None,None,None)  # no __exit__ for failed __enter__
+
+
+
+Thread-Locality Tests
+=====================
+
+Note: this test will probably need to change when the code goes to C
+
+>>> context.get_ident
+<...function get_ident...>
+
+>>> old_gi = context.get_ident
+>>> q = context.Global(default=99)
+
+>>> context.get_ident = lambda: "foo"
+>>> q(42).__enter__()
+>>> q()
+42
+
+>>> context.get_ident = lambda: "bar"
+>>> q()
+99
+
+>>> context.get_ident = lambda: "foo"
+>>> q()
+42
+
+>>> context.get_ident = old_gi    # put it back to normal
+
