@@ -93,7 +93,7 @@ The function takes one optional argument:
     >>> help(s1)
     Help on function s1:
     ...
-    s1(arg=<object object>)
+    s1(value=NOT_GIVEN)
         just an example
     ...
 
@@ -116,7 +116,7 @@ convenience:
     >>> help(s2)
     Help on function setting:
     ...
-    setting(arg=<object object>)
+    setting(value=NOT_GIVEN)
         A context.Setting that was defined without a docstring
     ...
         Call with zero arguments to get its value in the current scope, or with
@@ -135,7 +135,7 @@ when creating settings dynamically:
     >>> help(s3)
     Help on function s3 in module distutils.util:
     ...
-    s3(arg=<object object>)
+    s3(value=NOT_GIVEN)
         example
     ...
 
@@ -198,7 +198,7 @@ each, then show the values of the settings in each configuration:
 
     >>> context.with_(c1, lambda arg: favorite_number(8))
     >>> context.with_(c2, lambda arg: favorite_color("forest green"))
-    
+
     >>> context.with_(c1, show_favorites)   # with c1: show_favorites()
     favorite color: blue
     favorite number: 8
@@ -595,9 +595,138 @@ Advanced Features
 
 Not implemented yet:
 
-* Namespaces
 * Custom Action subclasses
 * Pools
+
+
+Dynamically Creating Settings and Resources
+===========================================
+
+Sometimes you need to dynamically create settings and resources at runtime,
+rather than defining them all in a module body.  For example, suppose that you
+want to have a handler for each URL scheme, that handles URLs of that type.
+But, you don't want to create a bunch of settings manually, like this:
+
+    >>> http = context.Setting('http')
+    >>> https = context.Setting('https')
+    ... # etc.
+
+because your application should be extensible to any number of schemes.
+
+
+Namespace Objects
+-----------------
+
+In this kind of situation, you can use the ``context.Namespace`` class to
+create a **namespace** of settings or resources.  For example:
+
+    >>> handlers = context.Namespace(context.Setting('handlers'))
+
+The ``handlers`` object is a resource function, but it has additional features
+that an ordinary resource does not.  It's a read-only mapping object whose keys
+are strings, and whose values are *new*, dynamically created resources:
+
+    >>> handlers['http']        # lookup creates new "child" resource
+    <function handlers.http at ...>
+
+    >>> 'http' in handlers      # membership test
+    True
+
+    >>> list(handlers)          # iteration is over keys
+    ['http']
+
+    >>> handlers.https          # attribute lookups also create resources
+    <function handlers.https at ...>
+
+    >>> sorted(handlers)        # and they're added to the keys too
+    ['http', 'https']
+
+As you can see, it's easy to create dynamic resources this way.  These
+dynamically created resources (or settings) do *not* have a default value
+initially, so you can set their default value by putting it in the root
+configuration:
+
+    >>> context.Config.root[handlers.http] = "default http handler"
+
+Although we're using settings for these examples, the same principles apply
+to ``Resource`` objects wrapped by ``Namespace`` wrappers.  The main difference
+is that for resources you will set *factories* rather than values.  But you
+still are setting them in either the current configuration or a specific
+configuration (like the root configuration, as just shown).
+
+
+Dynamic Lookups
+---------------
+
+Now, doing the dynamic lookup for a particular handler is easy:
+
+    >>> handlers['http']()
+    'default http handler'
+
+In practice, however, you should do something more like this when doing
+lookups:
+
+    >>> def get_handler(scheme):
+    ...     if scheme in handlers:
+    ...         return handlers[scheme]()
+
+    >>> print get_handler('http')
+    default http handler
+
+    >>> print get_handler('gopher')
+    None
+
+The reason for this approach is that if the named ``Setting`` hasn't been
+created yet, there's no way it could have a value, so there's no point in
+looking it up -- and creating it as a side effect.  If you have a namespace
+in which failed lookups are common, this is very important because each
+setting or resource that gets created is immortal and will never be garbage
+collected.  You should therefore only look up names that you either already
+know exist, or that you wish to set a value or factory for.
+
+
+Nested Namespaces
+-----------------
+
+Note that the dynamically-created settings or resources within a ``Namespace``
+are themselves namespaces:
+
+    >>> isinstance(handlers.http, context.Namespace)
+    True
+
+    >>> handlers.http.keep_alive
+    <function handlers.http.keep_alive ...>
+
+    >>> list(handlers.http)
+    ['keep_alive']
+
+and you can access sub-namespaces using either the attribute or mapping
+interfaces:
+
+    >>> handlers['http.keep_alive'] is handlers['http'].keep_alive
+    True
+
+    >>> handlers['http'].keep_alive is handlers.http.keep_alive
+    True
+
+    >>> 'http.keep_alive' in handlers
+    True
+
+But iterating over a given namespace yields only its immediate child names:
+
+    >>> sorted(handlers)
+    ['http', 'https']
+
+    >>> sorted(handlers.http)
+    ['keep_alive']
+
+
+Wildcard Rules
+--------------
+
+
+XXX naming restrictions?
+
 
 
 Dynamic Parameters using Globals
@@ -626,7 +755,7 @@ The function takes one optional argument:
     >>> help(v)
     Help on function v:
     ...
-    v(arg=<object object>)
+    v(value=NOT_GIVEN)
         just an example
     ...
 
@@ -692,7 +821,7 @@ global, default ones will be supplied for you:
     >>> help(v2)
     Help on function unnamed_global:
     ...
-    unnamed_global(arg=<object object>)
+    unnamed_global(value=NOT_GIVEN)
         A context.Global that was defined without a docstring
     ...
         Call with zero arguments to get its value, or with one argument to
@@ -703,7 +832,7 @@ global, default ones will be supplied for you:
 
     >>> print v2()  # The "default default" is None
     None
-    
+
 Finally, if you want to pretend that a global was defined in some other
 module (this is sometimes useful when creating globals dynamically), you can
 pass in a module name:
@@ -712,7 +841,7 @@ pass in a module name:
     >>> help(v3)
     Help on function foo in module distutils.util:
     ...
-    foo(arg=<object object>)
+    foo(value=NOT_GIVEN)
         example
     ...
 
@@ -762,7 +891,8 @@ Implementation Details and Tests
 --------------------------------
 
 This section exists just to explain and test various internal implementation
-detail
+details.
+
 
 
 PEP 343 Implementation Tests
@@ -865,6 +995,77 @@ passed in to the called function as its sole argument:
     42
 
 
+Namespace Tests
+===============
+
+    >>> for t in (context.Global,context.Resource,context.Setting):
+    ...     schemes = t("schemes")
+    ...     print schemes.__clone__(name='schemes.foo') # verify cloning
+    <function schemes.foo ...>
+    <function schemes.foo ...>
+    <function schemes.foo ...>
+
+    >>> ns = context.Namespace(context.Setting('schemes'))
+    >>> foo = ns.foo
+    >>> foo
+    <function schemes.foo ...>
+    >>> foo is ns.foo
+    True
+    >>> foo.bar
+    <function schemes.foo.bar ...>
+    >>> 'bar' in foo
+    True
+    >>> 'bar' in ns
+    False
+    >>> foo.bar(27)
+    >>> foo.bar()
+    27
+    >>> def handler(cfg,key):
+    ...     print "looking up", cfg, key
+    ...     return key.__name__
+    >>> foo['*'](handler)
+    >>> foo.baz()
+    looking up <...context.Config object ...> <function schemes.foo.baz ...>
+    'schemes.foo.baz'
+
+    >>> foo.bang('spam')
+    >>> foo.bang()
+    'spam'
+
+    >>> foo.bar.bang()  # 2nd level rule lookup
+    looking up <...context.Config ...> <function schemes.foo.bar.bang ...>
+    'schemes.foo.bar.bang'
+    
+    >>> ns.whee()   # key for which no rule exists
+    Traceback (most recent call last):
+      ...
+    NoValueFound: <function schemes.whee ...>
+
+    >>> ns['*'](handler)    # rule can't be set any more, since it was used
+    Traceback (most recent call last):
+      ...
+    SettingConflict: a different value for ....schemes.* is already defined
+
+    >>> ns['foo.bar'] is ns.foo.bar
+    True
+    >>> 'foo.bar' in ns
+    True
+
+    >>> foo['really.really.long.name.needing.multiple.rules']()
+    looking up ...foo.really.really.long.name.needing.multiple.rules ...
+    'schemes.foo.really.really.long.name.needing.multiple.rules'
+
+    >>> sorted(ns)  # * is not included in keys
+    ['foo', 'whee']
+
+    >>> sorted(foo)
+    ['bang', 'bar', 'baz', 'really']
+
+    >>> sorted(foo.bar)
+    ['bang']
+
+
+
 Config Object Tests
 ===================
 
@@ -910,7 +1111,7 @@ Config Object Tests
     >>> alt[59]
     Traceback (most recent call last):
       ...
-    AssertionError: Invalid Setting object or Config() hierarchy
+    NoValueFound: 59
 
 
 Action Tests
@@ -918,7 +1119,7 @@ Action Tests
 
     >>> print context.Action.current()
     None
-    
+
     >>> cfg = context.Config()
     >>> act = context.Action()
 
@@ -935,7 +1136,7 @@ Action Tests
     Traceback (most recent call last):
       ...
     RuntimeError: resource cannot be used outside of ...context.Action scope
-    
+
     >>> act.__context__() is act
     True
 
@@ -967,7 +1168,7 @@ Action Tests
     Traceback (most recent call last):
       ...
     RuntimeError: Action is not currently in use
-    
+
     >>> act.__enter__()
     >>> res()
     Setting up
@@ -1006,14 +1207,23 @@ Action Tests
     ...     def __enter__(self): raise RuntimeError("Foo!")
     ...     def __exit__(self,*exc):
     ...         raise AssertionError("This shouldn't get called!")
-    
+
     >>> res2 = context.Resource(factory=Failure)
     >>> res2()
     Traceback (most recent call last):
       ...
     RuntimeError: Foo!
 
+    >>> def recursive_factory(): return recursive_resource()
+    >>> recursive_resource = context.Resource(factory=recursive_factory)
+    >>> recursive_resource()    # doctest: +NORMALIZE_WHITESPACE
+    Traceback (most recent call last):
+      ...
+    RuntimeError: Circular dependency for resource (via <function
+    recursive_factory ...>)
+
     >>> act.__exit__(None,None,None)  # no __exit__ for failed __enter__
+
 
 
 

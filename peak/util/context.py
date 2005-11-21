@@ -1,10 +1,12 @@
 """Dynamic, contextual variables and services"""
 
 __all__ = [
-    'with_', 'call_with', 'manager', 'gen_exc_info', 'Global', 'Proxy',
-    'new', 'swap', 'snapshot', 'Resource', 'Setting', 'Action', 'Config',
+    'Action','Resource', 'Config','Setting','SettingConflict','NoValueFound',
+    'AbstractProxy', 'ObjectProxy', 'Proxy', 'Wrapper', # proxies
+    'Namespace', 'Global', 'new', 'snapshot', 'swap',   # system
+    'call_with', 'with_', 'manager', 'gen_exc_info',    # PEP 343 impl.
 ]
-
+    # XXX: clonef, qname, default_fallback, Symbol, NOT_FOUND, NOT_GIVEN
 
 try:
     from thread import get_ident
@@ -34,6 +36,45 @@ def _write_ctx():
         d = contexts[tid] = d.copy()
         del d['__frozen__']
     return d
+
+
+
+try:
+    from peak.util.symbols import Symbol, NOT_GIVEN, NOT_FOUND
+
+except ImportError:
+    class Symbol(object):
+    
+        """Symbolic global constant"""
+    
+        __slots__ = ['_name', '_module']
+        __name__   = property(lambda s: s._name)
+        __module__ = property(lambda s: s._module)
+    
+        def __init__(self, symbol, moduleName):
+            self.__class__._name.__set__(self,symbol)
+            self.__class__._module.__set__(self,moduleName)
+    
+        def __reduce__(self):
+            return self._name
+    
+        def __setattr__(self,attr,val):
+            raise TypeError("Symbols are immutable")
+    
+        def __repr__(self):
+            return self.__name__
+    
+        __str__ = __repr__
+    
+    
+    NOT_GIVEN   = Symbol("NOT_GIVEN", __name__)
+    NOT_FOUND   = Symbol("NOT_FOUND", __name__)
+
+
+
+
+
+
 
 
 
@@ -121,7 +162,7 @@ def call_with(ctxmgr):
 
 
 
-class GeneratorContextManager(object):
+class _GeneratorContextManager(object):
     """Helper class for ``@context.manager``"""
 
     __slots__ = "geniter"
@@ -151,7 +192,7 @@ class GeneratorContextManager(object):
 def manager(func):
     """Emulate 2.5 ``@contextmanager`` decorator"""
     def helper(*args, **kwds):
-        return GeneratorContextManager(func(*args, **kwds))
+        return _GeneratorContextManager(func(*args, **kwds))
     helper.__name__ = func.__name__
     helper.__doc__  = func.__doc__
     return helper
@@ -164,11 +205,11 @@ def manager(func):
 
 def Global(name="unnamed_global", default=None, doc=None, module=None):
 
-    _not_given = object()
+    _not_given = NOT_GIVEN
     __read = _read_ctx
     __pusher = _pusher
 
-    def f(arg = _not_given):
+    def f(value = _not_given):
         """A context.Global that was defined without a docstring
 
         Call with zero arguments to get its value, or with one argument to
@@ -176,12 +217,15 @@ def Global(name="unnamed_global", default=None, doc=None, module=None):
         passed-in value, for the duration of the "with:" block it's used to
         create.
         """
-        if arg is _not_given:
+        if value is _not_given:
             return __read().get(f,default)
         else:        
-            return __pusher(f,arg)
+            return __pusher(f,value)
 
     f = clonef(f,name,doc,module)   # *must* rebind f to cloned function here
+    f.__clone__ = (
+        lambda name=name,default=default,doc=doc,
+        module=f.func_globals.get('__name__'): Global(name,default,doc,module))
     return f
 
     
@@ -197,9 +241,6 @@ def clonef(f, name, doc, module, frame=None, level=2):
     f = function(f.func_code, _globals, name, f.func_defaults, f.func_closure)
     f.__doc__  = doc  or f.__doc__
     return f
-
-
-
 
 
 
@@ -227,14 +268,14 @@ gen_exc_info = Global(
     "gen_exc_info", (None,None,None),
 )
 
-
-
-
-
-
-
-
-
+def default_fallback(config,key):
+    """Look up the key in the config's parent scope, or error message"""
+    try:
+        return config.parent[key]
+    except TypeError:
+        if config.parent is None:
+            raise NoValueFound(key)
+        raise
 
 
 
@@ -245,7 +286,6 @@ gen_exc_info = Global(
 
 
 class Config(object):
-
     current = staticmethod(lambda: None)
 
     def __init__(self, parent=None):
@@ -263,12 +303,8 @@ class Config(object):
         try:
             return self.data[key]
         except KeyError:
-            try:
-                self[key] = value = self.parent[key]
-            except TypeError:
-                raise AssertionError(
-                    "Invalid Setting object or Config() hierarchy"
-                )
+            fallback = getattr(key,'__config_fallback__',default_fallback)
+            self[key] = value = fallback(self,key)
             return value
 
     def __setitem__(self,key,val):
@@ -285,16 +321,23 @@ Config.current = staticmethod(
     )
 )
 
+
+
+
+
+
 class SettingConflict(Exception):
     """Attempt to set conflicting value in a scope"""
 
+class NoValueFound(LookupError):
+    """No value was found for the setting or resource"""
 
 def Setting(name="setting", default=None, doc=None, module=None, scope=Config):
 
-    _not_given = object()
+    _not_given = NOT_GIVEN
     _scope = scope.current
 
-    def setting(arg = _not_given):
+    def setting(value = _not_given):
         """A context.Setting that was defined without a docstring
 
         Call with zero arguments to get its value in the current scope, or with
@@ -304,31 +347,29 @@ def Setting(name="setting", default=None, doc=None, module=None, scope=Config):
         without having been set inherit their value from the parent
         configuration of the current configuration.
         """
-        if arg is _not_given:
+        if value is _not_given:
             return _scope()[setting]
         else:        
-            _scope()[setting] = arg
+            _scope()[setting] = value
+            #return value
 
     setting = clonef(setting,name,doc,module)
-    Config.root[setting] = default
+    if default is not NOT_GIVEN:
+        Config.root[setting] = default
+
+    setting.__clone__ = (
+        lambda
+            name=name, default=default, doc=doc,
+            module=setting.func_globals.get('__name__'):
+            Setting(name,default,doc,module)
+    )
 
     return setting
 
 
-
-
-
-
-
-
-
-
-
-
-
 class Action(object):
 
-    __slots__ = 'config', 'managers', 'cache'
+    __slots__ = 'config', 'managers', 'cache', 'status'
 
     current = staticmethod(
         Global("current", doc = "Get or set the current Action scope")
@@ -339,6 +380,7 @@ class Action(object):
     def __init__(self, config=None):
         self.managers = []
         self.cache = {}
+        self.status = {}
         if config is None:
             config = self.get_config()
         self.config = config
@@ -349,21 +391,20 @@ class Action(object):
         except KeyError:
             cfg = self.config
             factory = cfg[key]
-            # try: self.cache[key] = IN_PROGRESS
-            res = self.cache[key] = self.manage(
-                with_(cfg, lambda arg: factory())
-            )
-            # except: del self.cache[key]; raise
-        #else:
-        #    if res is IN_PROGRESS: ...
+            status = self.status.get(key)
+            if status:
+                raise RuntimeError(
+                    "Circular dependency for %s (via %s)"
+                    % (qname(key),factory)
+                )
+            self.status[key] = 1    # recursion guard
+            try:
+                res = self.cache[key] = self.manage(
+                    with_(cfg, lambda arg: factory())
+                )
+            finally:
+                del self.status[key]
         return res
-
-
-
-
-
-
-
 
 
 
@@ -398,9 +439,9 @@ class Action(object):
 
         self.cache.clear()
 
-    # TODO: detect recursive resource factories
     # TODO: prevent closed resource access during __exit__
-    # TODO: prevent new resource creation during __exit__?  maybe not...
+
+
 
 
 
@@ -410,12 +451,12 @@ class Action(object):
 
 def Resource(name="resource", factory=None, doc=None, module=None, scope=Action):
 
-    _not_given = object()
+    _not_given = NOT_GIVEN
     _read_scope = scope.current
     _write_scope = scope.get_config
     _qname = qname
 
-    def resource(arg = _not_given):
+    def resource(factory = _not_given):
         """A context.Resource that was defined without a docstring
 
         Call with zero arguments to get the instance for the current action
@@ -423,7 +464,7 @@ def Resource(name="resource", factory=None, doc=None, module=None, scope=Action)
         current *configuration* scope (which may not be the same configuration
         being used by the current action scope).
         """
-        if arg is _not_given:
+        if factory is _not_given:
             _scope = _read_scope()
             try:
                 return _scope[resource]
@@ -435,19 +476,19 @@ def Resource(name="resource", factory=None, doc=None, module=None, scope=Action)
                     )
                 raise
         else:
-            _write_scope()[resource] = arg
+            _write_scope()[resource] = factory
+            #return factory
 
     resource = clonef(resource, name, doc, module)
-    Config.root[resource] = factory
+    if factory is not NOT_GIVEN:
+        Config.root[resource] = factory
 
+    resource.__clone__ = (
+        lambda name=name,factory=factory,doc=doc,
+        module=resource.func_globals.get('__name__'),scope=scope:
+            Resource(name,factory,doc,module,scope)
+    )
     return resource
-
-
-
-
-
-
-
 
 class AbstractProxy(object):
     """Delegates all operations (except __subject__ attr) to another object"""
@@ -553,6 +594,7 @@ class ObjectProxy(AbstractProxy):
     """Delegates all operations (except __subject__ attr) to another object"""
 
     __slots__ = "__subject__"
+
     def __init__(self,subject):
         self.__subject__ = subject
 
@@ -571,6 +613,128 @@ def Proxy(func):
 
 
 
+class Wrapper(ObjectProxy):
+    """Mixin to allow extra behaviors and attributes on proxy instance"""
+
+    __slots__ = ()
+
+    def __getattribute__(self, attr, oga=object.__getattribute__):       
+        if attr.startswith('__'):
+            subject = oga(self,'__subject__')
+            if attr=='__subject__':
+                return subject
+            return getattr(subject,attr)
+        return oga(self,attr)
+
+    def __getattr__(self,attr):
+        return getattr(self.__subject__,attr)
+
+    def __setattr__(self,attr,val, osa=object.__setattr__):
+        if (
+            attr=='__subject__'
+            or hasattr(type(self),attr) and not attr.startswith('__')
+        ):
+            osa(self,attr,val)
+        else:
+            setattr(self.__subject__,attr,val)
+        
+    def __delattr__(self,attr, oda=object.__delattr__):
+        if (
+            attr=='__subject__'
+            or hasattr(type(self),attr) and not attr.startswith('__')
+        ):
+            oda(self,attr)
+        else:
+            delattr(self.__subject__,attr)
+
+
+
+
+
+
+
+
+class Namespace(Wrapper):
+
+    def __getattr__(self, key):
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            if key.startswith('func_') or key.startswith('__'):
+                return getattr(self.__subject__,key)
+            return self[key]
+
+    def __getitem__(self,key):
+        if '.' in key:
+            for key in key.split('.'):
+                self = self[key]
+            return self
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            # TODO: verify syntax of key: nonempty, valid chars, ...?
+            val = self.__clone__("%s.%s" % (self.__name__,key), NOT_GIVEN)
+            if key=='*':
+                if hasattr(self,'__namespace__'):
+                    ns = self.__namespace__
+                    val.__config_fallback__ = lambda m,k: m[ns['*']]
+                else:
+                    val.__config_fallback__ = lambda m,k: default_fallback
+            else:
+                val.__config_fallback__ = lambda m,k: m[self['*']](m,k)
+                
+            val.__namespace__ = self
+            self.__dict__[key] = val = Namespace(val)
+            return val
+
+    def __contains__(self,key):
+        for key in key.split('.'):
+            if key not in self.__dict__:
+                return False
+            self = self[key]
+        return True
+
+
+    def __iter__(self):
+        for key in self.__dict__:
+            if not key.startswith('__') and key!='*':
+                yield key
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def new():
     """Return a new, empty thread state"""
@@ -580,7 +744,7 @@ def snapshot():
     """Return a snapshot of the all of this thread's current state globals
 
     This returns an object that can be passed into ``context.swap()`` to
-    restore the context global stack as it existed at this point in time.
+    restore all context globals to what they were at this point in time.
     A copy-on-write strategy is used, so that snapshots can always be taken
     in constant time, and no extra memory is used if multiple snapshots are
     taken during a period where no changes have occurred.
