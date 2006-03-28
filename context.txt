@@ -36,9 +36,10 @@ that let you emulate most of the "with" statement's functionality in Python
             yield                 typ, val, tb = context.gen_exc_info()
         except:                   if typ is not None:
             abort_txn()               abort_txn()
-        else:                         del typ, val, tb
-            commit_txn()          else:
-                                      commit_txn()
+            raise                     context.reraise()
+        else:                     else:               
+            commit_txn()              commit_txn()
+                                  
 
 The biggest difference between these constructs (apart from performance) is
 that the "with" statement lets you rebind variables in the surrounding scope,
@@ -353,6 +354,7 @@ resource management lifecycle works:
     ...         print "Setting up"
     ...         yield self
     ...         print "Tearing down", map(str,context.gen_exc_info())
+    ...         context.reraise()   # propagate error, if any
 
     >>> @context.call_with(TestResource())
     ... def do_it(ob):
@@ -906,6 +908,7 @@ An example context manager:
     ...     yield value
     ...     t, v, tb = context.gen_exc_info()
     ...     print "after (", t, v, tb, ")"
+    ...     context.reraise()   # propagate error, if any
 
 Applied to a simple function usign ``call_with()``:
 
@@ -1129,6 +1132,7 @@ Action Tests
     ...         print "Setting up"
     ...         yield self
     ...         print "Tearing down", map(str,context.gen_exc_info())
+    ...         context.reraise()   # propagate error, if any
 
     >>> res = context.Resource(factory=TestResource)
 

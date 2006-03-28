@@ -99,21 +99,21 @@ def with_(ctxmgr, func):
     try:
         retval = func(inp)
     except:
-        ctx.__exit__(*sys.exc_info())
-        raise
+        if not ctx.__exit__(*sys.exc_info()):
+            raise
     else:
         ctx.__exit__(None, None, None)
         return retval
 
 
-
-
-
-
-
-
-
-
+def reraise():
+    """Reraise the current contextmanager exception, if any"""
+    typ,val,tb = gen_exc_info()
+    if typ:
+        try:
+            raise typ,val,tb
+        finally:
+            del typ,val,tb
 
 
 
@@ -183,11 +183,17 @@ class _GeneratorContextManager(object):
         try:
             old = gen_exc_info()
             _write_ctx()[gen_exc_info] = exc
-            for value in self.geniter:
-                raise RuntimeError("Generator didn't stop")              
+            try:
+                for value in self.geniter:
+                    break
+                else:
+                    return True     # generator swallowed exception
+            except:
+                if not exc or sys.exc_info()[1] is not exc[1]: raise                    
+                return False
+            raise RuntimeError("Generator didn't stop")
         finally:
             _write_ctx()[gen_exc_info] = old
-
 
 def manager(func):
     """Emulate 2.5 ``@contextmanager`` decorator"""
@@ -196,12 +202,6 @@ def manager(func):
     helper.__name__ = func.__name__
     helper.__doc__  = func.__doc__
     return helper
-
-
-
-
-
-
 
 def Global(name="unnamed_global", default=None, doc=None, module=None):
 
@@ -262,6 +262,7 @@ def _pusher(f,val):
     _write_ctx()[f] = val
     yield None  # XXX should this be old, or val instead?
     _write_ctx()[f] = old
+    reraise()
 
 
 gen_exc_info = Global(
@@ -276,7 +277,6 @@ def default_fallback(config,key):
         if config.parent is None:
             raise NoValueFound(key)
         raise
-
 
 
 
