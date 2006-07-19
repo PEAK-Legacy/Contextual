@@ -6,7 +6,7 @@ __all__ = [
     'Namespace', 'Global', 'new', 'snapshot', 'swap',   # system
     'call_with', 'with_', 'manager', 'gen_exc_info',    # PEP 343 impl.
 ]
-    # XXX: clonef, qname, default_fallback, Scoped, Globals
+    # XXX: clonef, qname, default_fallback, Replaceable, Scope, Globals, replace
 
 from peak.util.symbols import Symbol, NOT_GIVEN, NOT_FOUND
 
@@ -245,15 +245,14 @@ def delegated_exit(self, typ, val, tb):
 
 
 class ScopedClass(type):
-
     def __init__(cls, name, bases, cdict):
         super(ScopedClass, cls).__init__(cls,name,bases,cdict)
-        if cls.parent_scope is not None:
+        if cls.scope is not None and 'current' not in cdict:
             cls.current = staticmethod(
                 make_variable(
                     name+".current", cls.__default__,
                     "Get or set the current "+name+" scope",
-                    cls.__module__, cls.parent_scope
+                    cls.__module__, cls.scope
                 )
             )
 
@@ -272,45 +271,33 @@ class Globals(object):
         raise TypeError("Globals can't be instantiated")
 
 
+@manager
+def replace(func, val):
+    """Context that temporarily replaces a scope, variable, or proxy"""
+    if type(func).__name__=='FunctionProxy' and hasattr(func,'__func__'):
+        func = func.__func__
+    elif isinstance(func, ScopedClass) and hasattr(func, 'current'):
+        func = func.current
+    old = func()
+    func(val)
+    yield val
+    func(old)
+    reraise()
 
 
-
-
-
-
-
-
-
-
-
-
-
-class Scoped(object):
+class Replaceable(object):
 
     __slots__ = ()
     __metaclass__ = ScopedClass
 
-    parent_scope = Globals
-
-    @classmethod
-    def get_read_scope_getter(cls):
-        return cls.current
-
-    @classmethod
-    def get_write_scope_getter(cls):
-        return cls.current
+    scope = Globals
 
     @classmethod
     def __default__(cls):
         return cls()
 
-    @manager
     def __context__(self):
-        old = self.current()
-        self.current(self)   # make self the current context
-        yield self
-        self.current(old)
-        reraise()
+        return replace(self.current, self)
 
     __enter__ = delegated_enter
     __exit__  = delegated_exit
@@ -320,13 +307,26 @@ class Scoped(object):
         return Proxy(cls.current)
 
 
+class Scope(Replaceable):
+    __slots__ = ()
+
+    @classmethod
+    def get_read_scope_getter(cls):
+        return cls.current
+
+    @classmethod
+    def get_write_scope_getter(cls):
+        return cls.current
 
 
 
 
 
 
-class Config(Scoped):
+
+
+
+class Config(Scope):
     __slots__ = 'parent', 'data'
 
     def __init__(self, parent=NOT_GIVEN):
@@ -367,7 +367,7 @@ Config.root = Config(None)
 
 
 
-class Action(Scoped):
+class Action(Scope):
     __slots__ = 'config', 'managers', 'cache', 'status'
 
     @classmethod
@@ -424,7 +424,7 @@ class Action(Scoped):
     def __enter__(self):
         if self.managers:
             raise RuntimeError("Action is already in use")
-        self.manage(Scoped.__context__(self))
+        self.manage(replace(self.current, self))
 
     def __exit__(self, *exc):
         if not self.managers:
@@ -603,8 +603,8 @@ def Proxy(func):
     class FunctionProxy(AbstractProxy):
         __slots__ = ()
         __subject__ = property(lambda self: func())
+        __func__ = staticmethod(func)
     return FunctionProxy()
-
 
 
 

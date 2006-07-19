@@ -6,5 +6,5 @@ setup(
     version="0.5",
     packages = find_packages(),
     namespace_packages=['peak', 'peak.util'],
-    test_suite="peak.util.context.doctest_suite",
+    test_suite="test_context",
 )
