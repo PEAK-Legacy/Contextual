@@ -37,9 +37,9 @@ that let you emulate most of the "with" statement's functionality in Python
         except:                   if typ is not None:
             abort_txn()               abort_txn()
             raise                     context.reraise()
-        else:                     else:               
+        else:                     else:
             commit_txn()              commit_txn()
-                                  
+
 
 The biggest difference between these constructs (apart from performance) is
 that the "with" statement lets you rebind variables in the surrounding scope,
@@ -346,15 +346,14 @@ is then cached for future calls.
 A resource factory can be a function, class, or any other object that can be
 called with no arguments.  For our examples here, we'll use a class whose
 instances are PEP 343 "context managers", so that you can see how the
-resource management lifecycle works:
+resource management lifecycle works::
 
     >>> class TestResource(object):
-    ...     @context.manager
-    ...     def __context__(self):
+    ...     def __enter__(self):
     ...         print "Setting up"
-    ...         yield self
-    ...         print "Tearing down", map(str,context.gen_exc_info())
-    ...         context.reraise()   # propagate error, if any
+    ...         return self
+    ...     def __exit__(self, typ, val, tb):
+    ...         print "Tearing down", map(str,(typ,val,tb))
 
     >>> @context.call_with(TestResource())
     ... def do_it(ob):
@@ -364,7 +363,7 @@ resource management lifecycle works:
     Tearing down ['None', 'None', 'None']
 
 As you can see, ``with TestResource() as ob: print ob`` does what we'd expect
-it to, given the ``__context__`` method.  Now let's define a resource using
+it to, given the defined methods.  Now let's define a resource using
 this factory:
 
     >>> res = context.Resource(factory=TestResource)
@@ -599,6 +598,56 @@ Not implemented yet:
 
 * Custom Action subclasses
 * Pools
+
+
+Context Manager Delegation
+==========================
+
+Sometimes, you may need to have an object provide a different object as its
+context manager.  Pre-release versions of Python 2.5 allowed you to define
+a ``__context__`` method to do this, but released versions do not.  To replace
+the missing functionality, you can use ``context.delegated_enter`` and
+``context.delegated_exit`` for your ``__enter__`` and ``__exit__`` methods::
+
+    >>> class Dummy:
+    ...     def __init__(self, ctx):
+    ...         self.ctx = ctx
+    ...     def __context__(self):
+    ...         return self.ctx
+    ...     __enter__ = context.delegated_enter
+    ...     __exit__ = context.delegated_exit
+
+    >>> g = context.Global(default=42)
+    >>> g()
+    42
+    >>> @context.call_with(Dummy(g(43)))
+    ... def do_it(x):
+    ...     print g()
+    43
+
+Nesting and reuse also work::
+
+    >>> c1 = context.Config()
+    >>> c2 = context.Config()
+    >>> c1[g] = 43
+    >>> c2[g] = 44
+    >>> d1 = Dummy(c1)
+    >>> d2 = Dummy(c2)
+
+    >>> @context.call_with(d1)
+    ... def do_it(x):
+    ...     print context.Config.current()[g]
+    ...     @context.call_with(d2)
+    ...     def do_it(x):
+    ...         print context.Config.current()[g]
+    ...         @context.call_with(d1)
+    ...         def do_it(x):
+    ...             print context.Config.current()[g]
+    43
+    44
+    43
+
+
 
 
 Dynamically Creating Settings and Resources
@@ -925,7 +974,7 @@ And the return value ends up bound under the same name as the function:
     >>> something
     42
 
-Errors in the called function get passed to ``__exit__()`` and reraised:
+Errors in the called function get passed to ``__exit__()`` and reraised::
 
     >>> try:
     ...     @context.call_with(demo_manager(57))
@@ -937,21 +986,24 @@ Errors in the called function get passed to ``__exit__()`` and reraised:
     after ( exceptions.TypeError foo <traceback object at...> )
     caught TypeError
 
-And the function name is of course not bound or rebound:
+And the function name is of course not bound or rebound::
 
     >>> fail
     Traceback (most recent call last):
       ...
     NameError: name 'fail' is not defined
 
-An object's ``__context__`` method can return a separate context manager that will
-be used instead of itself:
+An object's ``__context__`` method can return a separate context manager that
+will be used instead of itself, as long as the ``__enter__`` and ``__exit__``
+are the special delegated versions::
 
     >>> class AltManager(object):
     ...     def __context__(self):
     ...         return demo_manager(None)
+    ...     __enter__ = context.delegated_enter
+    ...     __exit__ = context.delegated_exit
 
-And that returned object will get its ``__enter__`` and ``__exit__`` called:
+And that returned object will get its ``__enter__`` and ``__exit__`` called::
 
     >>> @context.call_with(AltManager())
     ... def something(ob):
@@ -960,7 +1012,7 @@ And that returned object will get its ``__enter__`` and ``__exit__`` called:
     got None
     after ( None None None )
 
-You don't have to decorate a new function to use ``call_with`` or ``with_()``:
+You don't have to decorate a new function to use ``call_with`` or ``with_()``::
 
     >>> def something(ob):
     ...     print "got", ob
@@ -1038,7 +1090,7 @@ Namespace Tests
     >>> foo.bar.bang()  # 2nd level rule lookup
     looking up <...context.Config ...> <function schemes.foo.bar.bang ...>
     'schemes.foo.bar.bang'
-    
+
     >>> ns.whee()   # key for which no rule exists
     Traceback (most recent call last):
       ...
@@ -1133,6 +1185,8 @@ Action Tests
     ...         yield self
     ...         print "Tearing down", map(str,context.gen_exc_info())
     ...         context.reraise()   # propagate error, if any
+    ...     __enter__ = context.delegated_enter
+    ...     __exit__ = context.delegated_exit
 
     >>> res = context.Resource(factory=TestResource)
 
@@ -1140,9 +1194,6 @@ Action Tests
     Traceback (most recent call last):
       ...
     RuntimeError: resource cannot be used outside of ...context.Action scope
-
-    >>> act.__context__() is act
-    True
 
     >>> act.__enter__()
     >>> context.Action.current() is act
@@ -1207,7 +1258,6 @@ Action Tests
     42
 
     >>> class Failure(object):
-    ...     def __context__(self): return self
     ...     def __enter__(self): raise RuntimeError("Foo!")
     ...     def __exit__(self,*exc):
     ...         raise AssertionError("This shouldn't get called!")

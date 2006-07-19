@@ -39,7 +39,7 @@ def _write_ctx():
         del d['__frozen__']
     return d
 
-def with_(ctxmgr, func):
+def with_(ctx, func):
     """Perform PEP 343 "with" logic for Python versions <2.5
 
     The following examples do the same thing at runtime::
@@ -51,9 +51,8 @@ def with_(ctxmgr, func):
 
     This function is used to implement the ``call_with()`` decorator, but
     can also be used directly.  It's faster and more compact in the case where
-    the function ``f`` already exists
+    the function ``f`` already exists.
     """
-    ctx = ctxmgr.__context__()
     inp = ctx.__enter__()
     try:
         retval = func(inp)
@@ -73,6 +72,7 @@ def reraise():
             raise typ,val,tb
         finally:
             del typ,val,tb
+
 
 
 
@@ -129,9 +129,6 @@ class _GeneratorContextManager(object):
     def __init__(self, geniter):
         self.geniter = geniter
 
-    def __context__(self):
-        return self
-
     def __enter__(self):
         for value in self.geniter:
             return value
@@ -154,6 +151,7 @@ class _GeneratorContextManager(object):
         finally:
             _write_ctx()[gen_exc_info] = old
 
+
 def manager(func):
     """Emulate 2.5 ``@contextmanager`` decorator"""
     def helper(*args, **kwds):
@@ -161,6 +159,8 @@ def manager(func):
     helper.__name__ = func.__name__
     helper.__doc__  = func.__doc__
     return helper
+
+
 
 def Global(name="unnamed_global", default=None, doc=None, module=None):
 
@@ -208,11 +208,9 @@ def qname(f):
         m = f.__module__
     else:
         m = f.func_globals.get('__name__')
-
     if m:
         return '%s.%s' % (m,f.__name__)
     return f.__name__
-
 
 @manager
 def _pusher(f,val):
@@ -223,11 +221,6 @@ def _pusher(f,val):
     _write_ctx()[f] = old
     reraise()
 
-
-gen_exc_info = Global(
-    "gen_exc_info", (None,None,None),
-)
-
 def default_fallback(config,key):
     """Look up the key in the config's parent scope, or error message"""
     try:
@@ -237,11 +230,18 @@ def default_fallback(config,key):
             raise NoValueFound(key)
         raise
 
+gen_exc_info = Global("gen_exc_info", (None,None,None))
 
+_ctx_stack = object()
 
+def delegated_enter(self):
+    ctx = self.__context__()
+    _write_ctx().setdefault(_ctx_stack,[]).append(ctx)
+    return ctx.__enter__()
 
-
-
+def delegated_exit(self, typ, val, tb):
+    ctx = _read_ctx()[_ctx_stack].pop()
+    return ctx.__exit__(typ, val, tb)
 
 
 class Config(object):
@@ -257,6 +257,9 @@ class Config(object):
 
     def __context__(self):
         return self.current(self)   # make self the current context
+
+    __enter__ = delegated_enter
+    __exit__  = delegated_exit
 
     def __getitem__(self,key):
         try:
@@ -279,9 +282,6 @@ Config.current = staticmethod(
         """Get or set the current configuration scope"""
     )
 )
-
-
-
 
 
 
@@ -369,19 +369,16 @@ class Action(object):
 
     def manage(self, ob):
         try:
-            ob = ob.__context__
+            enter = ob.__enter__
         except AttributeError:
             return ob
-        ctx = ob()
+        ctx = ob
         ob = ctx.__enter__()
 
         # don't call __exit__ unless __enter__ succeeded
         # (if there was an error, we wouldn't have gotten this far)
         self.managers.append(ctx)
         return ob
-
-    def __context__(self):
-        return self
 
     def __enter__(self):
         if self.managers:
@@ -399,6 +396,9 @@ class Action(object):
         self.cache.clear()
 
     # TODO: prevent closed resource access during __exit__
+
+
+
 
 
 
