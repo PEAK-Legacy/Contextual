@@ -8,6 +8,8 @@ __all__ = [
 ]
     # XXX: clonef, qname, default_fallback, Symbol, NOT_FOUND, NOT_GIVEN
 
+from peak.util.symbols import Symbol, NOT_GIVEN, NOT_FOUND
+
 try:
     from thread import get_ident
 except ImportError:
@@ -36,49 +38,6 @@ def _write_ctx():
         d = contexts[tid] = d.copy()
         del d['__frozen__']
     return d
-
-
-
-try:
-    from peak.util.symbols import Symbol, NOT_GIVEN, NOT_FOUND
-
-except ImportError:
-    class Symbol(object):
-    
-        """Symbolic global constant"""
-    
-        __slots__ = ['_name', '_module']
-        __name__   = property(lambda s: s._name)
-        __module__ = property(lambda s: s._module)
-    
-        def __init__(self, symbol, moduleName):
-            self.__class__._name.__set__(self,symbol)
-            self.__class__._module.__set__(self,moduleName)
-    
-        def __reduce__(self):
-            return self._name
-    
-        def __setattr__(self,attr,val):
-            raise TypeError("Symbols are immutable")
-    
-        def __repr__(self):
-            return self.__name__
-    
-        __str__ = __repr__
-    
-    
-    NOT_GIVEN   = Symbol("NOT_GIVEN", __name__)
-    NOT_FOUND   = Symbol("NOT_FOUND", __name__)
-
-
-
-
-
-
-
-
-
-
 
 def with_(ctxmgr, func):
     """Perform PEP 343 "with" logic for Python versions <2.5
@@ -189,7 +148,7 @@ class _GeneratorContextManager(object):
                 else:
                     return True     # generator swallowed exception
             except:
-                if not exc or sys.exc_info()[1] is not exc[1]: raise                    
+                if not exc or sys.exc_info()[1] is not exc[1]: raise
                 return False
             raise RuntimeError("Generator didn't stop")
         finally:
@@ -219,7 +178,7 @@ def Global(name="unnamed_global", default=None, doc=None, module=None):
         """
         if value is _not_given:
             return __read().get(f,default)
-        else:        
+        else:
             return __pusher(f,value)
 
     f = clonef(f,name,doc,module)   # *must* rebind f to cloned function here
@@ -228,7 +187,7 @@ def Global(name="unnamed_global", default=None, doc=None, module=None):
         module=f.func_globals.get('__name__'): Global(name,default,doc,module))
     return f
 
-    
+
 def clonef(f, name, doc, module, frame=None, level=2):
     """Clone a func with reset globals to look like it came from elsewhere"""
     if module is not None:
@@ -292,7 +251,7 @@ class Config(object):
         if parent is None:
             parent = self.current()
         if parent is None:
-            parent = getattr(self,'root',None)            
+            parent = getattr(self,'root',None)
         self.parent = parent
         self.data = {}
 
@@ -349,7 +308,7 @@ def Setting(name="setting", default=None, doc=None, module=None, scope=Config):
         """
         if value is _not_given:
             return _scope()[setting]
-        else:        
+        else:
             _scope()[setting] = value
             #return value
 
@@ -376,7 +335,7 @@ class Action(object):
     )
 
     get_config = staticmethod(Config.current)
-        
+
     def __init__(self, config=None):
         self.managers = []
         self.cache = {}
@@ -418,7 +377,7 @@ class Action(object):
 
         # don't call __exit__ unless __enter__ succeeded
         # (if there was an error, we wouldn't have gotten this far)
-        self.managers.append(ctx)   
+        self.managers.append(ctx)
         return ob
 
     def __context__(self):
@@ -428,7 +387,7 @@ class Action(object):
         if self.managers:
             raise RuntimeError("Action is already in use")
         self.manage(self.current(self))
-        
+
     def __exit__(self, *exc):
         if not self.managers:
             raise RuntimeError("Action is not currently in use")
@@ -492,7 +451,7 @@ def Resource(name="resource", factory=None, doc=None, module=None, scope=Action)
 
 class AbstractProxy(object):
     """Delegates all operations (except __subject__ attr) to another object"""
-    
+
     __slots__ = ()
 
     def __call__(self,*args,**kw):
@@ -509,13 +468,13 @@ class AbstractProxy(object):
             osa(self,attr,val)
         else:
             setattr(self.__subject__,attr,val)
-        
+
     def __delattr__(self,attr, oda=object.__delattr__):
         if attr=='__subject__':
             oda(self,attr)
         else:
             delattr(self.__subject__,attr)
-    
+
     def __nonzero__(self):
         return bool(self.__subject__)
 
@@ -536,7 +495,7 @@ class AbstractProxy(object):
 
     def __delslice__(self,i,j):
         del self.__subject__[i:j]
-    
+
     def __contains__(self,ob):
         return ob in self.__subject__
 
@@ -551,10 +510,10 @@ class AbstractProxy(object):
         ('eq','=='), ('ne','!=')
     ]:
         exec "def __%s__(self,ob): return self.__subject__ %s ob" % (name,op)
-        
+
     for name,op in [('neg','-'), ('pos','+'), ('invert','~')]:
         exec "def __%s__(self): return %s self.__subject__" % (name,op)
-        
+
     for name, op in [
         ('or','|'),  ('and','&'), ('xor','^'), ('lshift','<<'), ('rshift','>>'),
         ('add','+'), ('sub','-'), ('mul','*'), ('div','/'), ('mod','%'),
@@ -575,13 +534,13 @@ class AbstractProxy(object):
     del name, op
 
     # Oddball signatures
-    
+
     def __rdivmod__(self,ob):
         return divmod(ob,self.__subject__)
 
     def __pow__(self,*args):
         return pow(self.__subject__,*args)
-    
+
     def __ipow__(self,ob):
         self.__subject__ **= ob
         return self
@@ -618,7 +577,7 @@ class Wrapper(ObjectProxy):
 
     __slots__ = ()
 
-    def __getattribute__(self, attr, oga=object.__getattribute__):       
+    def __getattribute__(self, attr, oga=object.__getattribute__):
         if attr.startswith('__'):
             subject = oga(self,'__subject__')
             if attr=='__subject__':
@@ -637,7 +596,7 @@ class Wrapper(ObjectProxy):
             osa(self,attr,val)
         else:
             setattr(self.__subject__,attr,val)
-        
+
     def __delattr__(self,attr, oda=object.__delattr__):
         if (
             attr=='__subject__'
@@ -682,7 +641,7 @@ class Namespace(Wrapper):
                     val.__config_fallback__ = lambda m,k: default_fallback
             else:
                 val.__config_fallback__ = lambda m,k: m[self['*']](m,k)
-                
+
             val.__namespace__ = self
             self.__dict__[key] = val = Namespace(val)
             return val
