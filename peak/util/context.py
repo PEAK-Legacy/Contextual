@@ -6,7 +6,7 @@ __all__ = [
     'Namespace', 'Global', 'new', 'snapshot', 'swap',   # system
     'call_with', 'with_', 'manager', 'gen_exc_info',    # PEP 343 impl.
 ]
-    # XXX: clonef, qname, default_fallback, Symbol, NOT_FOUND, NOT_GIVEN
+    # XXX: clonef, qname, default_fallback, Scoped, Globals
 
 from peak.util.symbols import Symbol, NOT_GIVEN, NOT_FOUND
 
@@ -162,31 +162,34 @@ def manager(func):
 
 
 
-def Global(name="unnamed_global", default=None, doc=None, module=None):
-
+def make_variable(name, factory, doc, module, scope):
     _not_given = NOT_GIVEN
-    __read = _read_ctx
-    __pusher = _pusher
+    _qname = qname
+    read_scope = scope.get_read_scope_getter()
+    write_scope = scope.get_write_scope_getter()
 
-    def f(value = _not_given):
-        """A context.Global that was defined without a docstring
-
-        Call with zero arguments to get its value, or with one argument to
-        receive a contextmanager that temporarily sets the global to the
-        passed-in value, for the duration of the "with:" block it's used to
-        create.
-        """
+    def var(value = _not_given):
         if value is _not_given:
-            return __read().get(f,default)
-        else:
-            return __pusher(f,value)
+            _scope = read_scope()
+            if _scope is None:
+                raise RuntimeError(
+                    "%s cannot be used outside of %s scope" %
+                    (_qname(var), _qname(scope))
+                )
+            try:
+                return _scope[var]
+            except KeyError:
+                value = factory()
+                write_scope()[var] = value
+                return value
 
-    f = clonef(f,name,doc,module)   # *must* rebind f to cloned function here
-    f.__clone__ = (
-        lambda name=name,default=default,doc=doc,
-        module=f.func_globals.get('__name__'): Global(name,default,doc,module))
-    return f
+        write_scope()[var] = value
 
+    var = clonef(var,name,doc,module,level=3)
+    var.__clone__ = lambda name, factory=factory: make_variable(
+        name, factory, doc, module, scope
+    )
+    return var
 
 def clonef(f, name, doc, module, frame=None, level=2):
     """Clone a func with reset globals to look like it came from elsewhere"""
@@ -195,13 +198,10 @@ def clonef(f, name, doc, module, frame=None, level=2):
         _globals = sys.modules[module].__dict__
     else:
         _globals = (frame or sys._getframe(level)).f_globals
-
     # clone the function using the targeted module (or caller's) globals
     f = function(f.func_code, _globals, name, f.func_defaults, f.func_closure)
     f.__doc__  = doc  or f.__doc__
     return f
-
-
 
 def qname(f):
     if hasattr(f,'__module__'):
@@ -230,7 +230,6 @@ def default_fallback(config,key):
             raise NoValueFound(key)
         raise
 
-gen_exc_info = Global("gen_exc_info", (None,None,None))
 
 _ctx_stack = object()
 
@@ -244,28 +243,107 @@ def delegated_exit(self, typ, val, tb):
     return ctx.__exit__(typ, val, tb)
 
 
-class Config(object):
-    current = staticmethod(lambda: None)
 
-    def __init__(self, parent=None):
-        if parent is None:
-            parent = self.current()
-        if parent is None:
-            parent = getattr(self,'root',None)
-        self.parent = parent
-        self.data = {}
+class ScopedClass(type):
 
+    def __init__(cls, name, bases, cdict):
+        super(ScopedClass, cls).__init__(cls,name,bases,cdict)
+        if cls.parent_scope is not None:
+            cls.current = staticmethod(
+                make_variable(
+                    name+".current", cls.__default__,
+                    "Get or set the current "+name+" scope",
+                    cls.__module__, cls.parent_scope
+                )
+            )
+
+
+class Globals(object):
+
+    @classmethod
+    def get_read_scope_getter(cls):
+        return _read_ctx
+
+    @classmethod
+    def get_write_scope_getter(cls):
+        return _write_ctx
+
+    def __new__(*args):
+        raise TypeError("Globals can't be instantiated")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class Scoped(object):
+
+    __slots__ = ()
+    __metaclass__ = ScopedClass
+
+    parent_scope = Globals
+
+    @classmethod
+    def get_read_scope_getter(cls):
+        return cls.current
+
+    @classmethod
+    def get_write_scope_getter(cls):
+        return cls.current
+
+    @classmethod
+    def __default__(cls):
+        return cls()
+
+    @manager
     def __context__(self):
-        return self.current(self)   # make self the current context
+        old = self.current()
+        self.current(self)   # make self the current context
+        yield self
+        self.current(old)
+        reraise()
 
     __enter__ = delegated_enter
     __exit__  = delegated_exit
+
+    @classmethod
+    def proxy(cls):
+        return Proxy(cls.current)
+
+
+
+
+
+
+
+
+class Config(Scoped):
+    __slots__ = 'parent', 'data'
+
+    def __init__(self, parent=NOT_GIVEN):
+        if parent is NOT_GIVEN:
+            parent = self.current()
+        self.parent = parent
+        self.data = {}
+
+    @classmethod
+    def __default__(cls):
+        return cls.root     # default Config is the root config
 
     def __getitem__(self,key):
         try:
             return self.data[key]
         except KeyError:
-            fallback = getattr(key,'__config_fallback__',default_fallback)
+            fallback = getattr(key, '__config_fallback__', default_fallback)
             self[key] = value = fallback(self,key)
             return value
 
@@ -276,72 +354,36 @@ class Config(object):
                 "a different value for %s is already defined" % qname(key)
             )
 
-Config.root = Config()
-Config.current = staticmethod(
-    Global("current", Config.root, doc =
-        """Get or set the current configuration scope"""
-    )
-)
+Config.root = Config(None)
 
 
 
-class SettingConflict(Exception):
-    """Attempt to set conflicting value in a scope"""
-
-class NoValueFound(LookupError):
-    """No value was found for the setting or resource"""
-
-def Setting(name="setting", default=None, doc=None, module=None, scope=Config):
-
-    _not_given = NOT_GIVEN
-    _scope = scope.current
-
-    def setting(value = _not_given):
-        """A context.Setting that was defined without a docstring
-
-        Call with zero arguments to get its value in the current scope, or with
-        one argument to change the setting to the passed-in value.  Note that
-        settings may only be changed once in a given scope, and then only if
-        they have not been read within that scope.  Settings that are read
-        without having been set inherit their value from the parent
-        configuration of the current configuration.
-        """
-        if value is _not_given:
-            return _scope()[setting]
-        else:
-            _scope()[setting] = value
-            #return value
-
-    setting = clonef(setting,name,doc,module)
-    if default is not NOT_GIVEN:
-        Config.root[setting] = default
-
-    setting.__clone__ = (
-        lambda
-            name=name, default=default, doc=doc,
-            module=setting.func_globals.get('__name__'):
-            Setting(name,default,doc,module)
-    )
-
-    return setting
 
 
-class Action(object):
 
+
+
+
+
+
+
+class Action(Scoped):
     __slots__ = 'config', 'managers', 'cache', 'status'
 
-    current = staticmethod(
-        Global("current", doc = "Get or set the current Action scope")
-    )
+    @classmethod
+    def get_write_scope_getter(cls):
+        return Config.current
 
-    get_config = staticmethod(Config.current)
+    @classmethod
+    def __default__(cls):
+        return None     # no default Action
 
     def __init__(self, config=None):
         self.managers = []
         self.cache = {}
         self.status = {}
         if config is None:
-            config = self.get_config()
+            config = self.get_write_scope_getter()()
         self.config = config
 
     def __getitem__(self,key):
@@ -366,7 +408,6 @@ class Action(object):
         return res
 
 
-
     def manage(self, ob):
         try:
             enter = ob.__enter__
@@ -383,7 +424,7 @@ class Action(object):
     def __enter__(self):
         if self.managers:
             raise RuntimeError("Action is already in use")
-        self.manage(self.current(self))
+        self.manage(Scoped.__context__(self))
 
     def __exit__(self, *exc):
         if not self.managers:
@@ -408,14 +449,30 @@ class Action(object):
 
 
 
+class SettingConflict(Exception):
+    """Attempt to set conflicting value in a scope"""
+
+class NoValueFound(LookupError):
+    """No value was found for the setting or resource"""
+
+def Setting(name="setting", default=None, doc=None, module=None, scope=Config):
+    doc = doc or \
+        """A context.Setting that was defined without a docstring
+
+        Call with zero arguments to get its value in the current scope, or with
+        one argument to change the setting to the passed-in value.  Note that
+        settings may only be changed once in a given scope, and then only if
+        they have not been read within that scope.  Settings that are read
+        without having been set inherit their value from the parent
+        configuration of the current configuration.
+        """
+    setting = make_variable(name, lambda:default, doc, module, scope)
+    if default is not NOT_GIVEN:
+        Config.root[setting] = default
+    return setting
+
 def Resource(name="resource", factory=None, doc=None, module=None, scope=Action):
-
-    _not_given = NOT_GIVEN
-    _read_scope = scope.current
-    _write_scope = scope.get_config
-    _qname = qname
-
-    def resource(factory = _not_given):
+    doc = doc or \
         """A context.Resource that was defined without a docstring
 
         Call with zero arguments to get the instance for the current action
@@ -423,31 +480,15 @@ def Resource(name="resource", factory=None, doc=None, module=None, scope=Action)
         current *configuration* scope (which may not be the same configuration
         being used by the current action scope).
         """
-        if factory is _not_given:
-            _scope = _read_scope()
-            try:
-                return _scope[resource]
-            except TypeError:
-                if _scope is None:
-                    raise RuntimeError(
-                        "%s cannot be used outside of %s scope" %
-                        (_qname(resource), _qname(scope))
-                    )
-                raise
-        else:
-            _write_scope()[resource] = factory
-            #return factory
+    resource = make_variable(name, lambda:factory, doc, module, scope)
 
-    resource = clonef(resource, name, doc, module)
     if factory is not NOT_GIVEN:
         Config.root[resource] = factory
 
-    resource.__clone__ = (
-        lambda name=name,factory=factory,doc=doc,
-        module=resource.func_globals.get('__name__'),scope=scope:
-            Resource(name,factory,doc,module,scope)
-    )
     return resource
+
+
+
 
 class AbstractProxy(object):
     """Delegates all operations (except __subject__ attr) to another object"""
@@ -660,32 +701,32 @@ class Namespace(Wrapper):
                 yield key
 
 
+def Global(name="unnamed_global", default=None, doc=None, module=None):
 
+    _not_given = NOT_GIVEN
+    __read = _read_ctx
+    __pusher = _pusher
 
+    def f(value = _not_given):
+        """A context.Global that was defined without a docstring
 
+        Call with zero arguments to get its value, or with one argument to
+        receive a contextmanager that temporarily sets the global to the
+        passed-in value, for the duration of the "with:" block it's used to
+        create.
+        """
+        if value is _not_given:
+            return __read().get(f,default)
+        else:
+            return __pusher(f,value)
 
+    f = clonef(f,name,doc,module)   # *must* rebind f to cloned function here
+    f.__clone__ = (
+        lambda name=name,default=default,doc=doc,
+        module=f.func_globals.get('__name__'): Global(name,default,doc,module))
+    return f
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+gen_exc_info = Global("gen_exc_info", (None,None,None))
 
 
 
