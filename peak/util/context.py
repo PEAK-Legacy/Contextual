@@ -63,7 +63,6 @@ def with_(ctx, func):
         ctx.__exit__(None, None, None)
         return retval
 
-
 def reraise():
     """Reraise the current contextmanager exception, if any"""
     typ,val,tb = gen_exc_info()
@@ -73,12 +72,13 @@ def reraise():
         finally:
             del typ,val,tb
 
-
-
-
-
-
-
+def replaces(target):
+    def decorator(cls):
+        assert issubclass(cls,Replaceable)
+        cls.current = staticmethod(target.current)
+        return cls
+    from peak.util.decorators import decorate_class
+    decorate_class(decorator)
 
 def call_with(ctxmgr):
     """Emulate the PEP 343 "with" statement for Python versions <2.5
