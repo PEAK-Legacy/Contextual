@@ -523,7 +523,7 @@ way you can tell the difference between the proxy and the thing it's proxying
 is to use ``type()``:
 
     >>> type(favorite_number)
-    <class '...context.FunctionProxy'>
+    <class '...Proxy'>
 
 But even its ``__class__`` (and ``isinstance()``) will match the underlying
 object:
