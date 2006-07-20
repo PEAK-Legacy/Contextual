@@ -1281,29 +1281,4 @@ Action Tests
 
 
 
-Thread-Locality Tests
-=====================
-
-Note: this test will probably need to change when the code goes to C
-
->>> context.get_ident
-<...function get_ident...>
-
->>> old_gi = context.get_ident
->>> q = context.Global(default=99)
-
->>> context.get_ident = lambda: "foo"
->>> q(42).__enter__()
->>> q()
-42
-
->>> context.get_ident = lambda: "bar"
->>> q()
-99
-
->>> context.get_ident = lambda: "foo"
->>> q()
-42
-
->>> context.get_ident = old_gi    # put it back to normal
 
