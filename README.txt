@@ -2,29 +2,67 @@
 Making the World Safe for "Globals" with ``peak.context``
 =========================================================
 
-Global variables and singletons are an attractive nuisance.  Seductively easy
-to create and use, but the bane of testability, maintainability,
-configurability, thread-safety...  the problems of using simple globals go on
-and on and on.
+So you're writing a library, and you have this object that keeps showing up
+in parameters or attributes everywhere, even though there's only ever *one*
+of that thing at a given moment in time.  Should you use a global variable or
+singleton?
 
-The "Contextual" library (``peak.context``) solves this problem by allowing you
-to create pseudo-global objects and variables that are context-sensitive
-and easily replaceable.
+Most of us know we "shouldn't" use globals, and some of us know that singletons
+are just another kind of global!  But there are times when they both just seem
+so darn attractive.  They're *so* easy to create and use, even though they're
+also the bane of testability, maintainability, configurability,
+thread-safety...  Heck, you can pretty much name it, and it's a problem with
+globals and singletons.
 
-While there are many "dependency injection" frameworks for Python (including
-Zope 3 and ``peak.config``), the "Contextual" library doesn't require you to
-declare interfaces, register services, create XML configuration files, or
-ensure that every object in your application knows where to look up services.
+Programming pundits talk about using "dependency injection" or "inversion of
+control" (IoC) to get rid of global variables.  And there are many dependency
+injection frameworks for Python (including Zope 3 and ``peak.config``).
 
-Instead, ``peak.context`` focuses on making globals *safe* and *replaceable*,
-while retaining the ease-of-definition and ease-of-use of simple global
-variables or singletons.  And, unlike thread-local variables, ``peak.context``
-supports asynchronous programming with microthreads, coroutines, or frameworks
+The problem is, these frameworks typically require you to declare interfaces,
+register services, create XML configuration files, and/or ensure that every
+object in your application knows where to look up services -- replacing one
+"globals" problem with another!  Not only does all this make things more
+complex than they need to be, it disrupts your programming flow by making you
+do busywork that doesn't provide any new benefits to your application.
+
+So, most of us end up stuck between various unpalatable choices:
+
+1. use a global and get it over with (but suffer a guilty conscience and
+   the fear of later disasters in retribution for our sins), or
+
+2. attempt to use a dependency injection framework, paying extra now to be
+   reassured that things will work out later.
+
+3. use a thread-local variable, and bear the cost of introducing a possible
+   threading dependency, and still not having a reasonable way to test or
+   configure alternate implementations.  Plus, thread-locals don't really
+   support asynchronous programming or co-operative multitasking.  What if
+   somebody wants to use your library under Twisted?
+
+But now there's a better choice.
+
+The "Contextual" library (``peak.context``) lets you create pseudo-singletons
+and pseudo-global variables that are context-sensitive and easily replaceable.
+They look and feel just like old-fashioned globals and singletons, but because
+they are safely scalable and replaceable, you don't have to worry about what
+happens "later".
+
+Contextual singletons are even better than thread-local variables, because they
+support asynchronous programming with microthreads, coroutines, or frameworks
 like Twisted.  A simple context-switching API lets you instantly change from
 one logical task's context to another.  This just isn't possible with ordinary
-thread-locals.
+thread-locals.  Meanwhile, "client" code that uses context-sensitive objects
+remains unchanged: the code simply uses whatever the "current" object is
+supposed to be.
 
-Here's what a simple "global" counter object looks like::
+And, isn't that all you wanted to do in the first place?
+
+
+Replaceable Singletons
+----------------------
+
+Here's what a simple "global" counter object implemented with ``peak.context``
+looks like::
 
     >>> from peak.util import context
 
@@ -67,13 +105,17 @@ statement::
     >>> count.value     # The original counter is now in use again
     1
 
-The ``@call_with`` decorator is a bit uglier than the ``with`` statement, but
-it works just as well.  You can also use an old-fashioned try-finally block,
+The ``@call_with`` decorator is a bit uglier than a ``with`` statement, but
+it works about as well.  You can also use an old-fashioned try-finally block,
 or some other before-and-after mechanism like the ``setUp()`` and
 ``tearDown()`` methods of a test to replace and restore the active instance.
 
-Want to create an alternate implementation of the same service?  That's
-simple too::
+
+Pluggable Services
+------------------
+
+Want to create an alternative implementation of the same service, that can
+be plugged in to replace it?  That's simple too::
 
     >>> class DoubleCounter(context.Replaceable):
     ...     context.replaces(Counter)
@@ -123,14 +165,16 @@ This code won't share any "globals" with the code that calls it; it will not
 only get its own private ``Counter`` instance, but a private instance of any
 other ``Replaceable`` objects it uses as well.  (Instances are created lazily
 in new contexts, so if you don't use a particular service, it's never created.)
+Try doing that with global or thread-local variables!
 
 In addition to these simple pseudo-global objects, ``peak.context`` also
 supports other kinds of context-sensitivity, like the concept of "settings"
 in a "current configuration" and the concept of "resources" in a "current
-action", that are notified whether the action completed successfully or exited
-with an error.  These features are orders of magnitude simpler in their
+action" (that are notified whether the action completed successfully or exited
+with an error).  These features are orders of magnitude simpler in their
 implementation and use, than the corresponding features in the earlier
-``peak.config`` and ``peak.storage`` frameworks.
+``peak.config`` and ``peak.storage`` frameworks, but provide equivalent or
+better functionality.
 
 For more details, please consult the Contextual reference manual.
 

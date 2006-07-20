@@ -22,13 +22,9 @@ Context Variables and State
 
 Globals
 
-'Namespace', 'Global', 'new', 'snapshot', 'swap',   # system
+'Global', 'new', 'snapshot', 'swap',   # system
 
 replace
-
-Context Proxies
-===============
-    'AbstractProxy', 'ObjectProxy', 'Proxy', 'Wrapper', # proxies
 
 
 Scopes and Scoped Objects
@@ -43,15 +39,25 @@ context.Replaceable
 context.Scope
 -------------
 
+
 Configurations and Settings
 ===========================
 
 'Config','Setting','SettingConflict','NoValueFound',
 
+
 Actions and Resources
 =====================
 
     'Action','Resource',
+
+
+Context Proxies
+===============
+
+Proxy type, Namespace
+
+
 
 PEP 343 Support
 ===============
