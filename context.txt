@@ -2,6 +2,10 @@
 Implicit Keeps You DRY: Safe Context Management for Python
 ==========================================================
 
+XXX THIS DOCTEST IS OBSOLETE AND NO LONGER REFLECTS THE API;
+    IT'S BEING KEPT ONLY TO LOOK FOR SALVAGEABLE BITS
+
+
 >>> from peak.util import context
 
 .. contents:: **Table of Contents**
@@ -75,27 +79,27 @@ we'll say more about this later.  XXX what?)
 Defining Settings
 -----------------
 
-Setting objects are created by passing in a name, a default value, and a
-docstring:
+Setting objects are created using the ``@context.setting`` decorator::
 
-    >>> s1 = context.Setting("s1", 42, doc="just an example")
+    >>> @context.setting
+    ... def s1(scope, key):
+    ...     """Just an example"""
+    ...     return 42
 
-Note that the default value will be shared by all threads, so settings should
-always use immutable, stateless, or threadsafe objects as their defaults.
+The decorated function is never executed, and its arguments are irrelevant,
+except that the first optional argument's default value will be used as the
+default value for the setting.  (Note that this default value will be shared by
+all threads, so settings should always use immutable, stateless, or threadsafe
+objects as their defaults.)
 
-The return value of ``Setting`` is a function object, that will appear to have
-been defined in the module that called ``setting()``:
-
-    >>> s1
-    <function s1...>
-
-The function takes one optional argument:
+The decorated function is replaced with a new function that takes one optional
+argument::
 
     >>> help(s1)
     Help on function s1:
     ...
-    s1(value=NOT_GIVEN)
-        just an example
+    s1()
+        Just an example
     ...
 
 And when called with no arguments, it returns the setting's value in the
@@ -105,41 +109,6 @@ unless you have activated a new configuration that overrides the default:
     >>> s1()
     42
 
-If you create a setting without a default, the "default default" is None.  The
-default name is "setting", and there is a default docstring as well for your
-convenience:
-
-    >>> s2 = context.Setting()
-
-    >>> print s2()
-    None
-
-    >>> help(s2)
-    Help on function setting:
-    ...
-    setting(value=NOT_GIVEN)
-        A context.Setting that was defined without a docstring
-    ...
-        Call with zero arguments to get its value in the current scope, or with
-        one argument to change the setting to the passed-in value.  Note that
-        settings may only be changed once in a given scope, and then only if
-        they have not been read within that scope.  Settings that are read
-        without having been set inherit their value from the parent
-        configuration of the current configuration.
-    ...
-
-Finally, note that you can specify a ``module`` argument to make a setting
-appear to have been defined in the specified module.  This is sometimes useful
-when creating settings dynamically:
-
-    >>> s3 = context.Setting('s3', doc="example", module="distutils.util")
-    >>> help(s3)
-    Help on function s3 in module distutils.util:
-    ...
-    s3(value=NOT_GIVEN)
-        example
-    ...
-
 
 Using Settings
 --------------
@@ -147,8 +116,8 @@ Using Settings
 Let's create a couple of "favorites" settings, and some code that displays
 their current value:
 
-    >>> favorite_number = context.Setting("favorite_number", 42)
-    >>> favorite_color  = context.Setting("favorite_color",  "blue")
+    >>> favorite_number = context.setting(lambda s,k: 42)
+    >>> favorite_color  = context.setting(lambda s,k: "blue")
 
     >>> def show_favorites(*args):
     ...     print "favorite color:", favorite_color()
@@ -606,16 +575,14 @@ Context Manager Delegation
 Sometimes, you may need to have an object provide a different object as its
 context manager.  Pre-release versions of Python 2.5 allowed you to define
 a ``__context__`` method to do this, but released versions do not.  To replace
-the missing functionality, you can use ``context.delegated_enter`` and
-``context.delegated_exit`` for your ``__enter__`` and ``__exit__`` methods::
+the missing functionality, you can use ``context.DelegatedContext`` as a base
+or mixin class, which effectively restores the missing functionality::
 
-    >>> class Dummy:
+    >>> class Dummy(context.DelegatedContext):
     ...     def __init__(self, ctx):
     ...         self.ctx = ctx
     ...     def __context__(self):
     ...         return self.ctx
-    ...     __enter__ = context.delegated_enter
-    ...     __exit__ = context.delegated_exit
 
     >>> g = context.Global(default=42)
     >>> g()
@@ -983,7 +950,7 @@ Errors in the called function get passed to ``__exit__()`` and reraised::
     ... except TypeError:
     ...     print "caught TypeError"
     before
-    after ( exceptions.TypeError foo <traceback object at...> )
+    after ( ...exceptions.TypeError... foo <traceback object at...> )
     caught TypeError
 
 And the function name is of course not bound or rebound::
@@ -994,14 +961,12 @@ And the function name is of course not bound or rebound::
     NameError: name 'fail' is not defined
 
 An object's ``__context__`` method can return a separate context manager that
-will be used instead of itself, as long as the ``__enter__`` and ``__exit__``
-are the special delegated versions::
+will be used instead of itself, as long as the class inherits from
+``context.DelegatedContext``::
 
-    >>> class AltManager(object):
+    >>> class AltManager(context.DelegatedContext):
     ...     def __context__(self):
     ...         return demo_manager(None)
-    ...     __enter__ = context.delegated_enter
-    ...     __exit__ = context.delegated_exit
 
 And that returned object will get its ``__enter__`` and ``__exit__`` called::
 
@@ -1178,15 +1143,13 @@ Action Tests
     >>> cfg = context.Config()
     >>> act = context.Action()
 
-    >>> class TestResource(object):
+    >>> class TestResource(context.DelegatedContext):
     ...     @context.manager
     ...     def __context__(self):
     ...         print "Setting up"
     ...         yield self
     ...         print "Tearing down", map(str,context.gen_exc_info())
     ...         context.reraise()   # propagate error, if any
-    ...     __enter__ = context.delegated_enter
-    ...     __exit__ = context.delegated_exit
 
     >>> res = context.Resource(factory=TestResource)
 
@@ -1237,7 +1200,7 @@ Action Tests
     False
 
     >>> act.__exit__(TypeError,TypeError("Foo"),None)
-    Tearing down ['exceptions.TypeError', 'Foo', 'None']
+    Tearing down [...'exceptions.TypeError'..., 'Foo', 'None']
 
     >>> c1 = context.Config()
     >>> def my_factory():

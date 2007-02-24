@@ -6,8 +6,135 @@ Creating Ultralight Frameworks with "Contextual" (``peak.context``)
 Developer's Guide
 -----------------
 
+    >>> from peak import context
+
+
 Overview and Concepts
 =====================
+
+The ``Contextual`` library provides a safe replacement for the use of global
+(or thread-local) variables, making it easy to create non-invasive frameworks
+that are still highly testable and configurable.  Code based on ``Contextual``
+is also safe for use in event-driven, coroutine, or "co-operative" multitasking
+systems such as Twisted and ``peak.events``, because an entire thread's context
+can be easily saved and restored when switching between different logical
+threads, tasks, or coroutines.
+
+The basic idea of the ``Contextual`` library is that it allows you to have
+"current" instances or values, that are specific to the current call stack in
+the current thread.  These "current" values can be temporarily changed
+using either a Python 2.5 ``with:`` statement, or, if backward compatibility is
+desired, a special decorator that simulates the ``with:`` statement in older
+versions of Python.
+
+There are three major kinds of "current" values that ``Contextual`` supports:
+
+Services
+    Services are like singletons, but have a separate instance for each thread
+    and can easily be replaced as needed for e.g. testing.  Services are
+    created by subclassing ``context.Service``, and the resulting class's
+    ``get()`` classmethod will return the current instance.  Alternative
+    implementations of a service can be defined and used to replace the default
+    implementation.
+
+Configuration Settings
+    The ``context.Config`` service provides thread-safe access to stateless
+    configuration values.  It is essentially a mapping whose contents cannot be
+    changed once they have been read.  The idea is that a configuration's
+    settings may be changed more than once while the configuration is being
+    set up, but once any code actually *uses* a setting, it should be
+    impossible for other code to see a different value for the same setting,
+    within the scope of that configuration.  (Of course, you can set up nested
+    and/or inheriting configurations with different setting values, if you need
+    to.)
+
+Transaction Resources
+    The ``context.Action`` service manages access to object that may need to
+    be recycled, saved, or reverted at the completion of an action such as
+    a transaction, web request, command, or other atomic operation.  Requesting
+    a resource such as a database connection causes it to become registered
+    with the current action, so that it will be notified of the success or
+    failure of the current ``Action``.  This then allows the resource to commit
+    or rollback as appropriate, return connections to connection pools, etc.
+
+    The boundaries of an action are indicated by the scope of a ``with:``
+    statement (or substitute).  E.g.::
+
+        with context.Action():
+            # any resources used here will be notified of the
+            # success or failure of this block of code
+
+
+Creating and Using Services
+===========================
+
+Here's a simple "counter" service implementation::
+
+    >>> class Counter(context.Service):
+    ...     value = 0
+    ...     def inc(self):
+    ...         self.value += 1
+
+You can get the current instance of the service using its ``get()``
+classmethod::
+
+    >>> count = Counter.get()   # get the current instance
+    >>> count.value
+    0
+    >>> count.inc()
+    >>> count.value
+    1
+
+By default, each thread will have its own unique instance, that's created upon
+first use, and is cached thereafter::
+
+    >>> count is Counter.get()  # still using the same one
+    True
+
+    >>> def run_in_another_thread():
+    ...     c2 = Counter.get()
+    ...     print c2 is count           # this will be different
+    ...     print c2 is Counter.get()   # but the same as long as thread runs
+
+    >>> import threading
+    >>> t = threading.Thread(target=run_in_another_thread)
+
+    >>> t.start(); t.join() # run and wait for it to finish
+    False
+    True
+
+But you can replace the current instance with another instance, by using a
+``with:`` statement::
+
+    >>> with Counter():     # the easy way to say it
+    ...     print count is Counter.get()    
+    False
+
+    >>> c2 = Counter()  # prove that this is the instance used in the block
+    >>> with c2:
+    ...     print c2 is Counter.get()
+    True
+
+    >>> count is Counter.get()  # old value is restored
+    True
+
+You can also create alternative implementations for a service, and substitute
+them for the original service.  They do not have to be subclasses of the
+original service for this to work, but they should of course be a suitable
+replacement::
+
+    >>> class DoubleCounter(context.Service):
+    ...     context.replaces(Counter)
+    ...     value = 0
+    ...     def inc(self):
+    ...         self.value += 2
+
+    >>> with DoubleCounter():
+    ...     print Counter.get().value
+    ...     Counter.get().inc()
+    ...     print Counter.get().value
+    0
+    2
 
 
 
@@ -59,8 +186,8 @@ Proxy type, Namespace
 
 
 
-PEP 343 Support
-===============
+Support for Python 2.3/2.4
+==========================
 
     'call_with', 'with_', 'manager', 'gen_exc_info',    # PEP 343 impl.
 
