@@ -44,8 +44,9 @@ But now there's a better choice.
 The "Contextual" library (``peak.context``) lets you create pseudo-singletons
 and pseudo-global variables that are context-sensitive and easily replaceable.
 They look and feel just like old-fashioned globals and singletons, but because
-they are safely scalable and replaceable, you don't have to worry about what
-happens "later".
+they are safely scalable to threads and tasks as well as being replaceable for
+testing or other dynamic contexts, you don't have to worry about what happens
+"later".
 
 Contextual singletons are even better than thread-local variables, because they
 support asynchronous programming with microthreads, coroutines, or frameworks
@@ -70,7 +71,6 @@ looks like::
     ...     value = 0
     ...
     ...     def inc(self):
-    ...         "test"
     ...         self.value += 1
     ...
 
@@ -121,12 +121,11 @@ be plugged in to replace it?  That's simple too::
     ...     value = 0
     ...     def inc(self):
     ...         self.value += 2
-    ...
 
 To use it, just do::
 
     with DoubleCounter():
-        # code in this block that calls ``count.inc()`` will be incrementing
+        # code in this block that calls ``Counter.inc()`` will be incrementing
         # a ``DoubleCounter`` instance by 2
 
 Or, in Python 2.4, you can do something like::
@@ -153,11 +152,11 @@ so you can just have a configuration file loader set up whatever services you
 want.  You can even take a snapshot of the entire current context and restore
 all the previous values::
 
-    with context.Globals():
-        # code to read config file and set ``current()`` services
+    with context.swap():
+        # code to read config file and set up services
         # code that uses the configured services
 
-This code won't share any "globals" with the code that calls it; it will not
+This code won't share any services with the code that calls it; it will not
 only get its own private ``Counter`` instance, but a private instance of any
 other ``Service`` objects it uses as well.  (Instances are created lazily
 in new contexts, so if you don't use a particular service, it's never created.)
@@ -168,9 +167,9 @@ supports other kinds of context-sensitivity, like the concept of "settings"
 in a "current configuration" and the concept of "resources" in a "current
 action" (that are notified whether the action completed successfully or exited
 with an error).  These features are orders of magnitude simpler in their
-implementation and use, than the corresponding features in the earlier
+implementation and use than the corresponding features in the earlier
 ``peak.config`` and ``peak.storage`` frameworks, but provide equivalent or
 better functionality.
 
-For more details, please consult the Contextual reference manual.
+For more details, please consult the Contextual developer's guide.
 

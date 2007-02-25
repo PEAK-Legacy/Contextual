@@ -6,12 +6,6 @@ Creating Ultralight Frameworks with "Contextual" (``peak.context``)
 Developer's Guide
 -----------------
 
-    >>> from peak import context
-
-
-Overview and Concepts
-=====================
-
 The ``Contextual`` library provides a safe replacement for the use of global
 (or thread-local) variables, making it easy to create non-invasive frameworks
 that are still highly testable and configurable.  Code based on ``Contextual``
@@ -19,6 +13,23 @@ is also safe for use in event-driven, coroutine, or "co-operative" multitasking
 systems such as Twisted and ``peak.events``, because an entire thread's context
 can be easily saved and restored when switching between different logical
 threads, tasks, or coroutines.
+
+Although ``Contextual`` works with Python versions 2.3 and up, the examples in
+this guide are written using Python 2.5 and the ``with`` statement for ease of
+reading.  If you're using an older version of, you'll need to consult the
+section below on `Support for Python 2.3/2.4`_ before you try using any of the
+examples that use the ``with`` statement.
+
+Also, under Python 2.5, you'll need to do a ``__future__`` import at the top
+of every module that uses the ``with`` statement, and of course you'll need
+to import the ``Contextual`` library too:
+
+    >>> from __future__ import with_statement
+    >>> from peak import context
+
+
+Overview and Features
+=====================
 
 The basic idea of the ``Contextual`` library is that it allows you to have
 "current" instances or values, that are specific to the current call stack in
@@ -31,31 +42,30 @@ There are three major kinds of "current" values that ``Contextual`` supports:
 
 Services
     Services are like singletons, but have a separate instance for each thread
-    and can easily be replaced as needed for e.g. testing.  Services are
-    created by subclassing ``context.Service``, and the resulting class's
-    ``get()`` classmethod will return the current instance.  Alternative
-    implementations of a service can be defined and used to replace the default
-    implementation.
+    and can easily be replaced as needed for e.g. testing or co-operative
+    multitasking.  Services are created by subclassing ``context.Service``, and
+    the resulting class's ``get()`` classmethod will return the current
+    instance.  Alternative implementations of a service can be defined and used
+    to replace the default implementation.
 
 Configuration Settings
     The ``context.Config`` service provides thread-safe access to stateless
     configuration values.  It is essentially a mapping whose contents cannot be
-    changed once they have been read.  The idea is that a configuration's
-    settings may be changed more than once while the configuration is being
-    set up, but once any code actually *uses* a setting, it should be
-    impossible for other code to see a different value for the same setting,
-    within the scope of that configuration.  (Of course, you can set up nested
-    and/or inheriting configurations with different setting values, if you need
-    to.)
+    changed once they have been read or set.  The idea is that once any code
+    actually *uses* a setting, it should be impossible for other code to see a
+    different value for the same setting, within the scope of that
+    configuration.  (Of course, you can set up nested and/or inheriting
+    configurations with different setting values, if you need to.)
 
 Transaction Resources
-    The ``context.Action`` service manages access to object that may need to
+    The ``context.Action`` service manages access to objects that may need to
     be recycled, saved, or reverted at the completion of an action such as
-    a transaction, web request, command, or other atomic operation.  Requesting
-    a resource such as a database connection causes it to become registered
-    with the current action, so that it will be notified of the success or
-    failure of the current ``Action``.  This then allows the resource to commit
-    or rollback as appropriate, return connections to connection pools, etc.
+    a transaction, command, web request, or other atomic operation.  Requesting
+    a resource (such as a database connection) from the action service causes
+    it to be registered with the current ``Action``, so that it will be
+    notified of the success or failure of the action.  This then allows the
+    resource to commit or rollback as appropriate, return connections to
+    connection pools or close them, etc.
 
     The boundaries of an action are indicated by the scope of a ``with:``
     statement (or substitute).  E.g.::
@@ -64,6 +74,51 @@ Transaction Resources
             # any resources used here will be notified of the
             # success or failure of this block of code
 
+In addition, ``Contextual`` offers some related convenience features:
+
+Parameters
+    A ``context.parameter`` is like a dynamically-scoped variable in languages
+    like Lisp.  ``Contextual`` uses parameters internally to keep track of
+    what services are currently active, but you can also use them directly
+    yourself.
+
+The ``App`` object
+    The ``context.App`` object can be used to swap out the current state of all
+    parameters and services, thereby creating either a new blank slate (e.g.
+    for tests) or swapping between multiple independent tasks in the same
+    thread (e.g. to do co-operative multitasking).
+
+Namespaces
+    Normally, configuration settings and action resources are defined
+    statically in code.  But sometimes you want to create a dynamic namespace
+    where any name could potentially identify a valid setting or resource,
+    possibly with some kind of rules to compute default values when they
+    haven't been explicitly set.  The ``@context.namespace`` decorator lets
+    you turn any setting or resource into such a namespace
+
+Configuration Files
+    ``Contextual`` offers an extensible ``.ini``-style configuration file
+    format that can be used to configure arbitrary settings and resources
+    across any number of modules, thereby giving you global configuration
+    of an entire application from a single configuration system.
+
+    The loaded configuration is lazy, which means that it doesn't force
+    importing of any of the modules being configured, and doesn't compute any
+    values until they're actually used by the application.  Thus, a
+    configuration file can include optional settings for modules that may not
+    even be installed!
+
+    Although the ``.ini`` syntax is a fixed property of the configuration
+    loader, the semantics can be extended to create custom section handlers
+    that interpret their contents differently -- and this can even be done
+    from within the ``.ini`` files themselves, because the handlers are looked
+    up using the same configuration services that everything else uses.  
+
+"with"-statement Emulation and Tools
+    Finally, ``Contextual`` offers a variety of decorators, base classes, and
+    utility functions that are useful for either emulating the "with" statement
+    in older versions of Python, and/or working with it in Python 2.5.
+    
 
 Creating and Using Services
 ===========================
@@ -103,8 +158,9 @@ first use, and is cached thereafter::
     False
     True
 
-But you can replace the current instance with another instance, by using a
-``with:`` statement::
+You can replace the current instance with another instance, by using the
+``with:`` statement (or a special function in older versions of Python; see
+the section below on `Support for Python 2.3/2.4`_ for more info)::
 
     >>> with Counter():     # the easy way to say it
     ...     print count is Counter.get()    
@@ -118,24 +174,115 @@ But you can replace the current instance with another instance, by using a
     >>> count is Counter.get()  # old value is restored
     True
 
-You can also create alternative implementations for a service, and substitute
-them for the original service.  They do not have to be subclasses of the
-original service for this to work, but they should of course be a suitable
-replacement::
 
-    >>> class DoubleCounter(context.Service):
+Easy Access Shortcuts
+---------------------
+
+Although up to this point we've been using ``Counter.get()`` to get the current
+``Counter`` instance, note that we can also just use class attributes and
+methods of ``Counter``, and they will automatically be redirected to the
+corresponding attributes and methods of the current instance::
+
+    >>> Counter.value
+    1
+    >>> Counter.inc()
+    >>> Counter.value
+    2
+    >>> Counter.value = 42
+    >>> Counter.get().value
+    42
+
+Any attribute that is defined in the service class that is *not* a
+staticmethod, classmethod, or language-defined class attribute (like
+``__new__`` and ``__slots__``) is automatically set up to redirect to the
+instances, when retrieved from the class.
+
+In other words, ``Counter.inc`` and ``Counter.value`` are just
+shorter ways to spell ``Counter.get().inc``, and ``Counter.get().value``.  The
+same shorthand works for getting, setting, or deleting class attributes.
+
+
+Service Replacements
+--------------------
+
+You can create alternative implementations for a service, and substitute
+them for the original service.  They do *not* have to be subclasses of the
+original service for this to work, but they should of course be a suitable
+replacement (i.e., implement the same interface).  For example, let's replace
+our ``Counter`` with an version that counts by twos, and can optionally
+increment by arbitrary amounts::
+
+    >>> class ExtendedCounter(context.Service):
     ...     context.replaces(Counter)
     ...     value = 0
     ...     def inc(self):
     ...         self.value += 2
+    ...     def inc_by(self, increment):
+    ...         self.value += increment
 
-    >>> with DoubleCounter():
-    ...     print Counter.get().value
-    ...     Counter.get().inc()
-    ...     print Counter.get().value
+    >>> with ExtendedCounter():
+    ...     print Counter.value
+    ...     Counter.inc()
+    ...     print Counter.value
     0
     2
 
+    >>> Counter.value
+    42
+
+As you can see, our count went back to 0, because inside the ``with`` block,
+the current ``Counter`` is actually the ``ExtendedCounter`` instance.  Its
+value also went up by 2.  Outside the ``with`` block, the original ``Counter``
+instance became current again, and thus ``Counter.value`` now returns the same
+value it did before.
+
+Note, by the way, that although ``ExtendedCounter`` has added a new method, it
+is not acessible from the ``Counter`` class namespace, even if an
+``ExtendedCounter`` is the current counter::
+
+    >>> with ExtendedCounter():
+    ...     Counter.inc_by(42)
+    Traceback (most recent call last):
+      ...
+    AttributeError: type object 'Counter' has no attribute 'inc_by'
+
+To access such additional methods, you need to either get an instance of the
+service using the ``get()`` classmethod, or use the replacement class
+directly::
+
+    >>> with ExtendedCounter():
+    ...     Counter.get().inc_by(42)
+    ...     print Counter.value
+    ...     ExtendedCounter.inc_by(24)
+    ...     print Counter.value
+    42
+    66
+
+However, the extra method will produce an attribute error at runtime if the
+current service instance doesn't actually have that method.  For example, the
+code below fails because the default ``Counter`` service is a ``Counter``,
+not an ``ExtendedCounter``::
+
+    >>> ExtendedCounter.inc_by
+    Traceback (most recent call last):
+      ...
+    AttributeError: 'Counter' object has no attribute 'inc_by'
+
+Now, you might be wondering at this point how your programs will ever be able
+to use an ``ExtendedCounter``, if the default instance is a ``Counter``.  Will
+you have to use a huge assortment of ``with`` statements to set up all the
+service implementations you want to use?
+
+Fortunately, no, because Contextual provides a configuration system that can be
+used to set up service implementations as well as other types of configuration,
+using either its built-in ``.ini`` format, or using whatever other mechanism
+you might want.  You can assemble the configuration of your entire program
+into a single configuration object, and then use a single ``with`` statement
+to execute your program under it.
+
+
+Configuration Services
+======================
 
 
 

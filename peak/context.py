@@ -3,6 +3,7 @@ from thread import get_ident
 from new import function
 from peak.util.symbols import NOT_GIVEN
 from peak.util.proxies import ObjectWrapper
+from peak.util.decorators import rewrap
 
 __all__ = [
     'Service', 'replaces', 'Config', 'setting', 'SettingConflict',
@@ -35,7 +36,6 @@ class SettingConflict(Exception):
 
 class NoValueFound(LookupError):
     """No value was found for the setting or resource"""
-
 
 
 
@@ -165,7 +165,7 @@ _exc_info = parameter(lambda: (None, None, None))
 def manager(func):
     """Emulate 2.5 ``@contextli.contextmanager`` decorator"""
     gcm = _GeneratorContextManager
-    return _clonef(func, lambda *args, **kwds: gcm(func(*args, **kwds)))
+    return rewrap(func, lambda *args, **kwds: gcm(func(*args, **kwds)))
   
 def with_(ctx, func):
     """Perform PEP 343 "with" logic for Python versions <2.5
@@ -261,17 +261,17 @@ def redirect_attribute(cls, name, payload):
         )
         # XXX activate_attrs(meta)?
 
-    f = payload
-    if hasattr(f,'__call__'):
-        f = _clonef(
-            payload, lambda *args,**kw: getattr(cls.get(), name)(*args,**kw)
-        )
-    setattr(meta, name, property(lambda s: getattr(s.get(), name)))
+    setattr(meta, name, property(
+        lambda s: getattr(s.get(), name),
+        lambda s,v: setattr(s.get(), name, v),
+        lambda s: delattr(s.get(), name),
+    ))
 
 _ignore = {
     '__name__':1, '__module__':1, '__return__':1, '__slots__':1, 'get':1,
     '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1, 
 }.get
+
 
 
 
@@ -375,7 +375,7 @@ def setting(func):
 def resource(func):
     """Decorator to create a configuration setting from a function
     """
-    return make_var(_clonef(func, lambda s,k: func), Action)
+    return make_var(_clonef(func, lambda scope, key: func), Action)
 
 
 def make_var(func, scope, name=None):

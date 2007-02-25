@@ -3,7 +3,7 @@ from setuptools import setup
 setup(
     name="Contextual",
     install_requires = [
-        'SymbolType>=1.0', 'DecoratorTools>=1.2', 'ProxyTypes>=0.9'
+        'SymbolType>=1.0', 'DecoratorTools>=1.3', 'ProxyTypes>=0.9'
     ],
     version="0.6",
     packages = ['peak'],

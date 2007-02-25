@@ -237,6 +237,56 @@ definition, and only once::
     ValueError: replaces() must be used only once per class; there is already a
     value for ``get``: <bound method ...get of <class 'S1'>>
 
+Services should be subclassable and super() should be usable in spite of all
+the singleton-izing magic, for both instance and class methods::
+
+    >>> class Base(context.Service):
+    ...     def test(self, other=None):
+    ...         print "hello from Base"
+    ...         if other is not None and other is not self:
+    ...             print "insanity!"
+    ...     t2 = classmethod(test)
+
+    >>> class Sub(Base):
+    ...     def test(self):
+    ...         print "hello from sub"
+    ...         super(Sub, self).test(self)
+    ...     def t2(cls):
+    ...         print "hello from sub cm"
+    ...         super(Sub, cls).t2()
+    ...     t2 = classmethod(t2)
+
+    >>> Base.get() is Sub.get()
+    False
+    
+    >>> Sub.test()
+    hello from sub
+    hello from Base
+
+    >>> Sub.t2()
+    hello from sub cm
+    hello from Base
+
+Service attributes should be settable and deletable, mapped to the instance::
+
+    >>> class Dummy(context.Service):
+    ...     foo = 42
+
+    >>> Dummy.foo
+    42
+
+    >>> Dummy.foo = 99
+    >>> Dummy().foo
+    42
+
+    >>> Dummy.get().foo
+    99
+
+    >>> del Dummy.foo
+    >>> Dummy.foo
+    42
+    >>> Dummy.get().foo
+    42
 
 
 Configuration Objects
