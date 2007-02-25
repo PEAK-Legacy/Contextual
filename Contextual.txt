@@ -208,9 +208,12 @@ Service Replacements
 You can create alternative implementations for a service, and substitute
 them for the original service.  They do *not* have to be subclasses of the
 original service for this to work, but they should of course be a suitable
-replacement (i.e., implement the same interface).  For example, let's replace
-our ``Counter`` with an version that counts by twos, and can optionally
-increment by arbitrary amounts::
+replacement (i.e., implement the same interface), and they *must* use the
+``context.replaces()`` class decorator to specify what service they're a
+replacement for (even if they are a subclass of that service class).
+
+For example, let's replace our ``Counter`` with an extended version that counts
+by twos, and can optionally increment by arbitrary amounts::
 
     >>> class ExtendedCounter(context.Service):
     ...     context.replaces(Counter)
@@ -268,6 +271,10 @@ not an ``ExtendedCounter``::
       ...
     AttributeError: 'Counter' object has no attribute 'inc_by'
 
+
+Configuring Replacement Services
+--------------------------------
+
 Now, you might be wondering at this point how your programs will ever be able
 to use an ``ExtendedCounter``, if the default instance is a ``Counter``.  Will
 you have to use a huge assortment of ``with`` statements to set up all the
@@ -280,10 +287,36 @@ you might want.  You can assemble the configuration of your entire program
 into a single configuration object, and then use a single ``with`` statement
 to execute your program under it.
 
+However, before we go into all that, here's a super-simple way to set up an
+application, using an ``App`` object (which will be explained further later
+on)::
 
-Configuration Services
-======================
+    >>> app = context.App()
+    >>> app[Counter] = ExtendedCounter
 
+    >>> with context.switch_to(app):
+    ...     ExtendedCounter.inc_by(29)
+    ...     print Counter.value
+    29
+
+Basically, you put zero-argument callables (e.g. types or factory functions)
+into the app to configure its services.  However, to ensure a consistent
+configuration, you can only set these *once* per ``App`` configuration::
+
+    >>> app[Counter] = Counter
+    Traceback (most recent call last):
+      ...
+    SettingConflict: a different value for <class 'Counter'> is already defined
+
+There are, of course, other things you can configure besides service factories,
+and other places to configure them besides the ``App`` service.  That's what
+the next few sections are about.
+
+
+Configuration and Settings
+==========================
+
+Config, @context.setting, SettingConflict
 
 
 -------------
@@ -291,54 +324,29 @@ API Reference
 -------------
 
 
-Context Variables and State
-===========================
+Service
+replaces()
 
-Globals
+Config
+@setting
+SettingConflict
 
-'Global', 'new', 'snapshot', 'swap',   # system
+Action
+@resource
 
-replace
+@namespace
 
+App
 
-Scopes and Scoped Objects
-=========================
+@parameter
 
-context.Replaceable
--------------------
-
-@context.replaces
------------------
-
-context.Scope
--------------
+switch_to()
 
 
-Configurations and Settings
-===========================
+@manager
+reraise,
+with_
+@call_with
 
-'Config','Setting','SettingConflict','NoValueFound',
-
-
-Actions and Resources
-=====================
-
-    'Action','Resource',
-
-
-Context Proxies
-===============
-
-Proxy type, Namespace
-
-
-
-Support for Python 2.3/2.4
-==========================
-
-    'call_with', 'with_', 'manager', 'gen_exc_info',    # PEP 343 impl.
-
-Context Manager Delegation
---------------------------
-
+Delegated
 

@@ -7,7 +7,7 @@ from peak.util.decorators import rewrap
 
 __all__ = [
     'Service', 'replaces', 'Config', 'setting', 'SettingConflict',
-    'Action', 'resource', 'namespace', 'App', 'parameter',
+    'Action', 'resource', 'namespace', 'App', 'parameter', 'switch_to',
     'Delegated', 'manager', 'reraise', 'with_', 'call_with',
 ]
 
@@ -490,47 +490,6 @@ class Action(Service):
 
 
 
-class _AppSwapper(object):
-    __slots__ = 'old', 'new'
-
-    def __init__(self, new):
-        self.new = new
-
-    def __enter__(self):
-        self.old = App.get().params
-        new = self.new
-        _params[get_ident()] = new.params
-        return new
-
-    def __exit__(self, typ, val, tb):
-        _params[get_ident()] = self.old
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class App(object):
     """Top-level scope for all parameters and services"""
 
@@ -538,8 +497,8 @@ class App(object):
 
     def __init__(self, config=NOT_GIVEN):
         self.params = {App: self}
-        if config==NOT_GIVEN:
-            config = Config.get()
+        if config is NOT_GIVEN:
+            config = Config(Config.get())
         self.config = config
         
     def __default__(cls):
@@ -549,8 +508,17 @@ class App(object):
 
     __default__ = classmethod(__default__)
 
+    def __getitem__(self, key):
+        return self.config[key]
+
+    def __setitem__(self, key, value):
+        self.config[key] = value
+
     def swap(self):
-        return _AppSwapper(self)
+        """Make this the current App, returning the previous current App"""
+        old = App.get()
+        _params[get_ident()] = self.params
+        return old
 
     '''def copy(self):
         """Return a new App based on the same config"""
@@ -562,15 +530,6 @@ class App(object):
         for k,v in self.params.iteritems():
             npsd(k, v)
         return new'''
-
-
-
-
-
-
-
-
-
 
 class namespace(ObjectWrapper):
     """Decorator that wraps a setting or resource w/an extensible namespace"""
@@ -681,14 +640,14 @@ def replaces(target):
         )
 
 
+def switch_to(app):
+    """Switch to another application, then return to the current one"""
+    old = app.swap()
+    yield None
+    old.swap()
+    reraise()
 
-
-
-
-
-
-
-
+switch_to = manager(switch_to)
 
 
 

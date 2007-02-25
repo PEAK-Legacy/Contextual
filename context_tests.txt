@@ -351,29 +351,62 @@ Configuration Objects
 Applications and Services
 =========================
 
+Simple service replacement in a new application context::
+
+    >>> S1.get()
+    <S1 object ...>
+
+    >>> app = context.App()
+    >>> app[S1] = S2
+
+    >>> old = app.swap()
+
+    >>> S1.get()
+    <S2 object ...>
+
+    >>> app is old.swap()
+    True
+
+
 By default, service factories are always executed in the context of the
 application's main configuration, even if a different configuration is active
 at the time the service is requested::
 
-    >>> a = context.App(context.Config())
+    >>> a1 = context.App()
 
     >>> def factory():
     ...     print aSetting()
     ...     return S2()
-    >>> a.config[S1] = factory
-    >>> context.with_(a.swap(), lambda a: S1.get())
+    >>> a1[S1] = factory
+    >>> a1[S1] is factory
+    True
+
+    >>> old = a1.swap()
+    >>> context.App[S1] is factory
+    True
+
+    >>> S1.get()
     42
     <S2 object ...>
 
-    >>> a = context.App(context.Config())
-    >>> a.config[S1] = factory
-    >>> c = context.Config(a.config)
+    >>> a2 = context.App()
+    >>> a2[S1] = factory
+    >>> c = context.Config(a2.config)
     >>> c[aSetting] = 999
-    >>> context.with_(a.swap(), lambda a: context.with_(c, lambda c: S1.get()))
+    >>> context.with_(context.switch_to(a2), lambda a: context.with_(c, lambda c: S1.get()))
     42
     <S2 object ...>
 
+    >>> context.App.get() is a1      # verify switch_to() manager restored a1
+    True
+    
+    >>> a1 is old.swap()        # verify swap returns previous value
+    True
 
+    >>> context.App.get() is old     # verify swap sets target
+    True
+
+    
 
 Namespaces
 ==========
