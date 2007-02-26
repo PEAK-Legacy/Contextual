@@ -1,9 +1,8 @@
-import sys
+import sys, new
 from thread import get_ident
-from new import function
 from peak.util.symbols import NOT_GIVEN
 from peak.util.proxies import ObjectWrapper
-from peak.util.decorators import rewrap
+from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
     'Service', 'replaces', 'Config', 'setting', 'SettingConflict',
@@ -14,7 +13,7 @@ __all__ = [
 
 def _clonef(src, impl, name=None):
     """Create a copy of function `impl` that looks like `src`"""
-    f = function(
+    f = new.function(
         impl.func_code, src.func_globals, name or src.__name__,
         impl.func_defaults, impl.func_closure
     )
@@ -36,6 +35,7 @@ class SettingConflict(Exception):
 
 class NoValueFound(LookupError):
     """No value was found for the setting or resource"""
+
 
 
 
@@ -606,6 +606,88 @@ nsd = namespace.__dict__['__dict__'].__get__
 
 
 
+
+
+
+
+
+
+
+class Source(object):
+    """Object representing a source file (or pseudo-file)"""
+
+    __slots__ = "filename", "__weakref__"
+    
+    def __init__(self, filename, source=None):
+        global linecache; import linecache
+        self.filename = filename
+        if source is not None:
+            cache_source(filename, source, self)
+
+    def compile(self, *args, **kw):
+        return Line(''.join(self), self, 1).compile(*args, **kw)
+
+    def __getitem__(self, key):
+        return Line(linecache.getlines(self.filename)[key], self, key+1)
+
+    def __repr__(self):
+        return "Source(%r)" % self.filename   
+
+    def recode(self, code, offset=0):
+        if not isinstance(code, new.code):
+            return code
+        return new.code(
+            code.co_argcount, code.co_nlocals, code.co_stacksize,
+            code.co_flags, code.co_code,
+            tuple([self.recode(c, offset) for c in code.co_consts]+[self]),
+            code.co_names, code.co_varnames, code.co_filename, code.co_name,
+            code.co_firstlineno+offset, code.co_lnotab, code.co_freevars,
+            code.co_cellvars
+        )
+
+
+
+
+
+
+
+
+
+
+class Line(str):
+    """String that knows its file and line number"""
+
+    def __new__(cls, text, source, line):
+        return str.__new__(cls, text)
+
+    def __init__(self, text, source, line):
+        self.source = source
+        self.line = line
+
+    def compile(self, *args, **kw):
+        # XXX needs syntax error trapping, unicode encoding support
+        code = compile(self, self.source.filename, *args, **kw)
+        return self.source.recode(code, self.line-1)
+
+    def eval(self, *args):
+        return eval(self.compile('eval'), *args)
+
+    def splitlines(self, *args, **kw):
+        return [Line(line, self.source, self.line+offset)
+            for offset, line in enumerate(str.splitlines(self, *args, **kw))]
+
+    for m in [
+        'capitalize', 'center', 'expandtabs', 'ljust', 'lower', 'lstrip',
+        'replace', 'rjust', 'rstrip', 'strip', 'swapcase', 'title',
+        'translate', 'upper', 'zfill', '__add__', '__radd__', '__getslice__',
+        '__mod__', '__rmod__',
+    ]:
+        if hasattr(str, m):
+            locals()[m] = (lambda f:
+                lambda self,*args,**kw: Line(
+                    f(self,*args,**kw), self.source, self.line
+                )
+            )(getattr(str,m))
 
 
 

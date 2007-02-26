@@ -578,6 +578,53 @@ Actions
     >>> act.__exit__(None,None,None)  # no __exit__ for failed __enter__
 
 
+Source Lines
+============
+
+    >>> from peak.context import Source, Line
+    
+    >>> s = Source("<test>", "def foo():\n  def bar(): return 42\n  return bar")
+    >>> s
+    Source('<test>')
+
+    >>> list(s)
+    ['def foo():\n', '  def bar(): return 42\n', '  return bar']
+
+    >>> exec s.compile('exec')
+    >>> bar = foo()
+    >>> bar.func_code.co_firstlineno
+    2
+
+    >>> s[1].strip()
+    'def bar(): return 42'
+
+    >>> _.line
+    2
+
+    >>> (s[1]+'\n').splitlines()[1].line
+    3
+    
+    >>> exec(s[1].strip().compile('exec'))
+    >>> bar.func_code.co_firstlineno
+    2
+
+    >>> l = Line("lambda: (\n lambda: \n lambda: 42)", s, 19)
+    >>> f = eval(l.compile('eval'))
+    >>> f.func_code.co_firstlineno
+    19
+    >>> f().func_code.co_firstlineno
+    20
+    >>> f()().func_code.co_firstlineno
+    21
+    >>> f()()()
+    42
+
+    >>> from pkg_resources import yield_lines
+    >>> list(yield_lines(s))
+    ['def foo():', 'def bar(): return 42', 'return bar']
+
+    >>> _[2].line
+    3
 
 
 PEP 343 Implementation Tests
