@@ -327,15 +327,16 @@ class Service(Delegated):
 
 
 class Config(Service):
-    """A write-once, read-many mapping service with inheritance"""
+    """A write-until-read, thread-safe, lock-free mapping with inheritance"""
 
-    __slots__ = 'parent', 'data'
+    __slots__ = 'parent', 'snapshot', 'buffer'
 
     def __init__(self, parent=NOT_GIVEN):
         if parent is NOT_GIVEN:
             parent = self.get()
         self.parent = parent
-        self.data = {}
+        self.snapshot = {}
+        self.buffer = {}
 
     def __default__(cls):
         return cls.root
@@ -344,28 +345,27 @@ class Config(Service):
 
     def __getitem__(self,key):
         try:
-            return self.data[key]
+            return self.snapshot[key]
         except KeyError:
-            fallback = key.__config_fallback__ #getattr(, default_fallback)
-            self[key] = value = fallback(self,key)
-            return value
+            try:
+                current = self.buffer[key]
+            except KeyError:
+                fallback = key.__config_fallback__ #getattr(, default_fallback)
+                current = self.buffer.setdefault(key, fallback(self, key))
 
+            # snapshot the currently-set value - this is thread-safe
+            # because setdefault is atomic, so data[key] will only *ever*
+            # have one value, even if it's not the one now in the writebuf
+            return self.snapshot.setdefault(key, current)
 
     def __setitem__(self, key, val):
-        old = self.data.setdefault(key, val)
+        self.buffer[key] = val
+        # as long as data[key] hasn't been snapshotted, `old` will be `val`
+        old = self.snapshot.get(key, val)   
         if old is not val and old != val:
-            raise SettingConflict(
-                "a different value for %s is already defined" % (key,) #qname
-            )
+            raise SettingConflict(key, old, val)
 
 Config.root = Config(None)
-
-
-
-
-
-
-
 
 def setting(func):
     """Decorator to create a configuration setting from a function

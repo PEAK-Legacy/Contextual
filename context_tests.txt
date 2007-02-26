@@ -316,7 +316,7 @@ Configuration Objects
     >>> c2[1] = 3
     Traceback (most recent call last):
       ...
-    SettingConflict: a different value for 1 is already defined
+    SettingConflict: (1, 2, 3)
 
     >>> c3[1] = 9
     >>> c3[1]
@@ -341,7 +341,8 @@ Configuration Objects
     
     >>> c.__exit__(None, None, None)
 
-    >>> c3[aSetting] = 99
+    >>> c3[aSetting] = 42   
+    >>> c3[aSetting] = 99   # multiple writes okay as long as not read yet
     >>> c3[aSetting]
     99
     >>> c3[aSetting] = 99

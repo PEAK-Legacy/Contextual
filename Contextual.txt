@@ -299,14 +299,8 @@ on)::
     ...     print Counter.value
     29
 
-Basically, you put zero-argument callables (e.g. types or factory functions)
-into the app to configure its services.  However, to ensure a consistent
-configuration, you can only set these *once* per ``App`` configuration::
-
-    >>> app[Counter] = Counter
-    Traceback (most recent call last):
-      ...
-    SettingConflict: a different value for <class 'Counter'> is already defined
+Basically, you just put zero-argument callables (e.g. types or factory
+functions) into the app to configure its services.
 
 There are, of course, other things you can configure besides service factories,
 and other places to configure them besides the ``App`` service.  That's what
@@ -316,7 +310,28 @@ the next few sections are about.
 Configuration and Settings
 ==========================
 
+
 Config, @context.setting, SettingConflict
+
+
+Actions and Resources
+=====================
+
+
+Namespaces and Configuration Files
+==================================
+
+
+Dynamic Parameters
+==================
+
+
+The Application Object
+======================
+
+
+Co-operative Multi-tasking
+--------------------------
 
 
 -------------
@@ -336,17 +351,19 @@ Action
 
 @namespace
 
-App
-
 @parameter
 
+App
 switch_to()
 
+Delegated
 
+
+Support for Python 2.3/2.4
+==========================
 @manager
 reraise,
 with_
 @call_with
 
-Delegated
 
