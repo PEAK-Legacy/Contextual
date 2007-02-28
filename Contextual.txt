@@ -49,13 +49,14 @@ Services
     to replace the default implementation.
 
 Configuration Settings
-    The ``context.Config`` service provides thread-safe access to stateless
-    configuration values.  It is essentially a mapping whose contents cannot be
-    changed once they have been read or set.  The idea is that once any code
+    ``context.setting`` objects provide thread-safe access to stateless
+    configuration values.  Settings can have different values in different
+    contexts, but once the setting's value has been retrieved in a given
+    context it can no longer be changed.  (The idea is that once any code
     actually *uses* a setting, it should be impossible for other code to see a
-    different value for the same setting, within the scope of that
-    configuration.  (Of course, you can set up nested and/or inheriting
-    configurations with different setting values, if you need to.)
+    different value for the same setting, within the context of all code
+    "seeing" that value.  Of course, you can easily set up nested and/or
+    inheriting contexts with different setting values, if you need to.)
 
 Transaction Resources
     The ``context.Action`` service manages access to objects that may need to
@@ -77,14 +78,15 @@ Transaction Resources
 In addition, ``Contextual`` offers some related convenience features:
 
 Parameters
-    A ``context.parameter`` is like a dynamically-scoped variable in languages
-    like Lisp.  ``Contextual`` uses parameters internally to keep track of
-    what services are currently active, but you can also use them directly
-    yourself.
+    A ``context.parameter`` is somewhat like a dynamically-scoped variable in
+    languages like Lisp.  ``Contextual`` uses parameters internally to keep
+    track of what services are currently active, but you can also use them
+    directly yourself.
 
-The ``App`` object
-    The ``context.App`` object can be used to swap out the current state of all
-    parameters and services, thereby creating either a new blank slate (e.g.
+``State`` objects
+    State objects can be used to explicitly manipulate the current context,
+    e.g. to swap out the current state of all parameters, resources, and
+    services, thereby creating either a new blank slate (e.g.
     for tests) or swapping between multiple independent tasks in the same
     thread (e.g. to do co-operative multitasking).
 
@@ -117,7 +119,7 @@ Configuration Files
 "with"-statement Emulation and Tools
     Finally, ``Contextual`` offers a variety of decorators, base classes, and
     utility functions that are useful for either emulating the "with" statement
-    in older versions of Python, and/or working with it in Python 2.5.
+    in older versions of Python, and/or working with it in Python 2.5+.
     
 
 Creating and Using Services
@@ -283,35 +285,20 @@ service implementations you want to use?
 Fortunately, no, because Contextual provides a configuration system that can be
 used to set up service implementations as well as other types of configuration,
 using either its built-in ``.ini`` format, or using whatever other mechanism
-you might want.  You can assemble the configuration of your entire program
-into a single configuration object, and then use a single ``with`` statement
-to execute your program under it.
+you might want.  So you can assemble the configuration of your entire program
+into a single object, and then use a single ``with`` statement to execute your
+program under it.
 
-However, before we go into all that, here's a super-simple way to set up an
-application, using an ``App`` object (which will be explained further later
-on)::
-
-    >>> app = context.App()
-    >>> app[Counter] = ExtendedCounter
-
-    >>> with context.switch_to(app):
-    ...     ExtendedCounter.inc_by(29)
-    ...     print Counter.value
-    29
-
-Basically, you just put zero-argument callables (e.g. types or factory
-functions) into the app to configure its services.
-
-There are, of course, other things you can configure besides service factories,
-and other places to configure them besides the ``App`` service.  That's what
-the next few sections are about.
+Or, if you are doing configuration in code, you can stack multiple services,
+settings, etc. in a single ``with context.using(*items):`` statement.
+XXX example
 
 
 Configuration and Settings
 ==========================
 
 
-Config, @context.setting, SettingConflict
+
 
 
 Actions and Resources
@@ -338,25 +325,23 @@ Co-operative Multi-tasking
 API Reference
 -------------
 
-
 Service
 replaces()
 
-Config
 @setting
-SettingConflict
+@resource
+@parameter
+
+using, only, State
+
+RuleConflict
+DynamicRuleError
 
 Action
-@resource
 
 @namespace
 
-@parameter
-
-App
-switch_to()
-
-Delegated
+lookup
 
 
 Support for Python 2.3/2.4

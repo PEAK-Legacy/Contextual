@@ -2,6 +2,266 @@
 ``peak.context`` Internals
 ==========================
 
+    >>> from peak.context import State, lookup, using, only
+    >>> from peak.context import setting, parameter, namespace
+
+
+Thread testing utility::
+
+    >>> def run_in_thread(func):
+    ...     from threading import Thread
+    ...     t = Thread(target = func)
+    ...     t.start()
+    ...     t.join()
+
+
+State Objects
+=============
+
+Separate, ongoing states exist for each thread::
+
+    >>> State.get()
+    <...State object at ...>
+    
+    >>> State.get() is State.get()
+    True
+
+    >>> my_state = State.get()
+    >>> def test_other_thread():
+    ...     print my_state is State.get()
+    >>> run_in_thread(test_other_thread)
+    False
+
+States allow setting and getting rules for values::
+
+    >>> s = State()
+    >>> s[1] = 2
+    >>> s[1] = 3
+
+But rules can't be changed once they've been used/read::
+
+    >>> s[1]
+    3
+
+    >>> s[1] = 3
+    >>> s[1] = 4
+    Traceback (most recent call last):
+      ...
+    RuleConflict: (1, 3, 4)
+
+
+Settings
+========
+
+Settings can be created from functions returning default values::
+
+    >>> def a_setting(): return 42
+    >>> a_setting = setting(a_setting)
+
+If a rule isn't established for a setting in a state, its default value is
+used::
+
+    >>> s[a_setting]
+    42
+
+And of course it can't be changed except to the same value afterward::
+
+    >>> s[a_setting] = 42
+    >>> s[a_setting] = 43
+    Traceback (most recent call last):
+      ...
+    RuleConflict: (<function a_setting ...>, 42, 43)
+
+
+Child States and Setting Inheritance
+====================================
+
+States can have child states, that inherit their rules' settings::
+
+    >>> parent = State()
+    >>> child = parent.child()
+    >>> child.parent is parent
+    True
+
+    >>> parent[a_setting] = 99
+    >>> child[a_setting]
+    99
+
+States can be swapped in and out of current-ness::
+
+    >>> original = State.get()
+    >>> old = parent.swap()
+    >>> old is original
+    True
+    >>> State.get() is parent
+    True
+    >>> old.swap() is parent
+    True
+    >>> State.get() is old
+    True
+
+Calling a setting returns its value in the current state::
+
+    >>> a_setting()
+    42
+
+    >>> old = child.swap()
+    >>> a_setting()
+    99
+
+
+Parameters and ``lookup``
+=========================
+
+Parameters can be created from functions returning values::
+
+    >>> def a_param(): return 42
+    >>> a_param = parameter(a_param)
+
+    >>> a_param()
+    42
+
+    >>> old = parent.child().swap()
+    >>> State.get()[a_param] = object
+    >>> a_param()
+    <object object at ...>
+    >>> o1 = a_param()
+    >>> o2 = a_param()
+    >>> o1 is o2
+    True
+
+The ``lookup()`` function returns the current value for any key, either static
+or dynamic::
+
+    >>> lookup(a_param) is a_param()
+    True
+
+    >>> lookup(a_setting) is a_setting()
+    True
+
+    >>> new = old.swap()
+
+    >>> lookup(a_setting), lookup(a_param)
+    (99, 42)
+
+
+Rule Purity
+===========
+
+Looking up non-rule values during default calculation of a rule is forbidden::
+
+    >>> def s2():
+    ...     return a_param()
+    >>> s2 = setting(s2)
+    >>> s2()
+    Traceback (most recent call last):
+      ...
+    DynamicRuleError: ('default rule tried to read dynamic state', ...a_param...)
+
+
+As is changing the active state::
+
+    >>> def s3():
+    ...     return parent.swap()
+    >>> s3 = setting(s3)
+    >>> s3()
+    Traceback (most recent call last):
+      ...
+    DynamicRuleError: default rule tried to change states
+
+    >>> a_param()
+    42
+
+
+Value Sharing
+=============
+
+Computed values should rise to the highest part of the state where they can
+be determined to still be based on identical rules::
+
+    >>> root = State()
+    >>> s1 = root.child()
+    >>> s2 = s1.child()
+    >>> s3 = s2.child()
+    >>> s4 = s3.child()
+
+    >>> def lookupIn(state, key):
+    ...     old = state.swap()
+    ...     try: return lookup(key)
+    ...     finally: old.swap()
+
+    >>> f1 = lambda:object()
+    >>> f2 = object    # similar result, but unequal factory
+
+    >>> k1 = parameter(f1)
+    >>> s3[k1] = f2
+
+Looking up k1 in s4 propagates the value to s3 and its children, because the
+rule is established there::
+
+    >>> lookupIn(s4, k1) is lookupIn(s3, k1) is lookupIn(s3.child(), k1)
+    True
+
+But since s3 has a different rule from s2, the value doesn't propagate any
+further up::
+
+    >>> lookupIn(s3, k1) is lookupIn(s2, k1)    # different factories
+    False
+
+Instead, s2 shares its value with s1 and root::
+
+    >>> lookupIn(s2, k1) is lookupIn(s1, k1) is lookupIn(root, k1)  # same ones
+    True
+
+A value can only be shared as high as the lowest of its (recursive)
+dependencies.  So, if we define a new parameter whose factory at the root is
+based on a lookup of the previous dynamic parameter::
+
+    >>> k2 = parameter(f1)
+    >>> root[k2] = lambda: [k1()]
+
+Then its propagation scope should be the same as those of k1::
+
+    >>> lookupIn(s3, k2) is lookupIn(s2, k2)
+    False
+
+    >>> lookupIn(s4, k2) is lookupIn(s3, k2) is lookupIn(s3.child(), k2)
+    True
+
+    >>> lookupIn(s4, k2) is not lookupIn(s2, k2)
+    True
+
+And a dynamic dependency on k2 should follow the same rules too::
+
+    >>> k9 = parameter(lambda: k2())
+    >>> lookupIn(s3, k9) is lookupIn(s2, k9)
+    False
+
+The cases shown so far only show dynamic dependency on an already-known value.
+We also need to verify dynamic dependency on an as-yet-unknown value::
+
+    >>> k3 = parameter(f1)
+    >>> k4 = parameter(f1)
+    >>> s2[k3] = object
+    >>> root[k4] = lambda: [k3()]
+
+    >>> lookupIn(s3, k4) is lookupIn(s2, k4) is not lookupIn(s1, k4)
+    True
+
+And dynamic dependency on a static value::
+
+    >>> k5 = setting(lambda:42)
+    >>> k6 = parameter(f1)
+    >>> s2[k5] = 99
+    >>> root[k6] = lambda: k5()
+
+    >>> lookupIn(s3, k6) is lookupIn(s2, k6) is not lookupIn(s1, k6)
+    True
+
+
+
+
+
 >>> from peak import context
 
 Function Cloning
@@ -43,49 +303,6 @@ whose implementation and arguments come from a different function::
     >>> f3.a
     99
 
-Parameter Lookup
-================
-
-Simple set/get::
-
-    >>> key1 = object()
-    >>> key2 = object()
-    >>> context._set_param(key1, 42)
-    >>> context._set_param(key2, 57)
-    >>> context._get_param(key1), context._get_param(key2)
-    (42, 57)
-
-
-Values are per-thread::
-
-    >>> def test_other_thread():
-    ...     context._set_param(key1, "hey you")
-    ...     context._set_param(key2, "whazzup?")
-    ...     print (context._get_param(key1), context._get_param(key2))
-
-    >>> from threading import Thread
-    >>> t = Thread(target=test_other_thread)
-    >>> t.start(); t.join()
-    ('hey you', 'whazzup?')
-
-    >>> context._get_param(key1), context._get_param(key2)
-    (42, 57)
-
-Setting a key to ``NOT_GIVEN`` deletes it::
-
-    >>> context._set_param(key1, context.NOT_GIVEN)
-
-Accessing an unset key raises a ``KeyError``::
-
-    >>> context._get_param(key1)
-    Traceback (most recent call last):
-      ...
-    KeyError: <object object at ...>
-
-But deleting an unset key does *not*::
-
-    >>> context._set_param(key1, context.NOT_GIVEN)
-
 
 Parameter Objects
 =================
@@ -98,7 +315,7 @@ return value when called in that context::
     ...     """A Parameter"""
     ...     return 42   # default value
 
-    >>> my_param = context.parameter(my_param)
+    >>> my_param = parameter(my_param)
 
     >>> help(my_param)
     Help on function my_param...:
@@ -111,11 +328,10 @@ return value when called in that context::
 
 Calling a parameter function with an argument returns a context manager that
 temporarily sets the parameter to that value (so you can say, e.g.,
-``with my_param(99):`` and have it work)::
+``with my_param(lambda: 99):`` and have it work)::
 
-    >>> cm = my_param(99)
+    >>> cm = my_param(lambda: 99)
     >>> cm.__enter__()
-    99
     >>> my_param()
     99
     >>> cm.__exit__(None, None, None)
@@ -127,10 +343,9 @@ It should also save the un-computed state of an as-yet-unused parameter::
     >>> def p2():
     ...     print "computing"
     ...     return 69
-    >>> p2 = context.parameter(p2)
-    >>> cm = p2(57)
+    >>> p2 = parameter(p2)
+    >>> cm = p2(lambda: 57)
     >>> cm.__enter__()
-    57
     >>> p2()
     57
     >>> cm.__exit__(None, None, None)
@@ -138,44 +353,6 @@ It should also save the un-computed state of an as-yet-unused parameter::
     computing
     69
 
-
-
-Delegated Contexts
-==================
-
-    >>> class dg(context.Delegated):
-    ...     def __context__(self):
-    ...         print "beginning"
-    ...         yield 42
-    ...         print "ending"
-    ...     __context__ = context.manager(__context__)
-
-    >>> d1 = dg()
-    >>> d1.__enter__()
-    beginning
-    42
-    >>> d2 = dg()
-    >>> d2.__enter__()
-    beginning
-    42
-    >>> d2.__exit__(None, None, None)
-    ending
-    >>> d1.__exit__(None, None, None)
-    ending
-
-    >>> d1.__enter__()
-    beginning
-    42
-    >>> d2.__enter__()
-    beginning
-    42
-    >>> d1.__exit__(None, None, None)
-    Traceback (most recent call last):
-      ...
-    AssertionError: context stack is corrupted
-
-    >>> d1.__exit__(None, None, None)
-    ending
 
 
 Services
@@ -196,7 +373,6 @@ Services
 
     >>> s2 = S2()
     >>> s2.__enter__()
-    <S2 object at ...>
     >>> s2 is S1.get() is S2.get()
     True
     >>> s2.__exit__(None,None,None)
@@ -235,7 +411,7 @@ definition, and only once::
     Traceback (most recent call last):
       ...
     ValueError: replaces() must be used only once per class; there is already a
-    value for ``get``: <bound method ...get of <class 'S1'>>
+    value for ``get``: <bound method ...lookup of <class 'S1'>>
 
 Services should be subclassable and super() should be usable in spite of all
 the singleton-izing magic, for both instance and class methods::
@@ -289,130 +465,16 @@ Service attributes should be settable and deletable, mapped to the instance::
     42
 
 
-Configuration Objects
-=====================
-
-    >>> c = context.Config()
-
-    >>> c.parent is context.Config.root
-    True
-
-    >>> c2 = context.Config(c)
-    >>> c2.parent is c
-    True
-
-    >>> c2.__enter__()
-    <...Config object ...>
-
-    >>> c3 = context.Config()
-    >>> c3.parent is c2
-    True
-    >>> c2.__exit__(None, None, None)
-
-    >>> c2[1] = 2
-    >>> c2[1]
-    2
-    >>> c2[1] = 2
-    >>> c2[1] = 3
-    Traceback (most recent call last):
-      ...
-    SettingConflict: (1, 2, 3)
-
-    >>> c3[1] = 9
-    >>> c3[1]
-    9
-
-    >>> def aSetting(cfg, key):
-    ...     print "Computing for ", cfg, key
-    ...     return 42
-
-    >>> aSetting = context.setting(aSetting)
-    >>> aSetting()  # gets computed & cached in the root
-    Computing for  <...context.Config object...> <function aSetting...>
-    42
-
-    >>> c.__enter__()
-    <...context.Config object ...>
-
-    >>> aSetting()
-    42
-    >>> c[aSetting] = 42
-    >>> context.Config[aSetting] = 42
-    
-    >>> c.__exit__(None, None, None)
-
-    >>> c3[aSetting] = 42   
-    >>> c3[aSetting] = 99   # multiple writes okay as long as not read yet
-    >>> c3[aSetting]
-    99
-    >>> c3[aSetting] = 99
-
-
-
-Applications and Services
-=========================
-
-Simple service replacement in a new application context::
-
-    >>> S1.get()
-    <S1 object ...>
-
-    >>> app = context.App()
-    >>> app[S1] = S2
-
-    >>> old = app.swap()
-
-    >>> S1.get()
-    <S2 object ...>
-
-    >>> app is old.swap()
-    True
-
-
-By default, service factories are always executed in the context of the
-application's main configuration, even if a different configuration is active
-at the time the service is requested::
-
-    >>> a1 = context.App()
-
-    >>> def factory():
-    ...     print aSetting()
-    ...     return S2()
-    >>> a1[S1] = factory
-    >>> a1[S1] is factory
-    True
-
-    >>> old = a1.swap()
-    >>> context.App[S1] is factory
-    True
-
-    >>> S1.get()
-    42
-    <S2 object ...>
-
-    >>> a2 = context.App()
-    >>> a2[S1] = factory
-    >>> c = context.Config(a2.config)
-    >>> c[aSetting] = 999
-    >>> context.with_(context.switch_to(a2), lambda a: context.with_(c, lambda c: S1.get()))
-    42
-    <S2 object ...>
-
-    >>> context.App.get() is a1      # verify switch_to() manager restored a1
-    True
-    
-    >>> a1 is old.swap()        # verify swap returns previous value
-    True
-
-    >>> context.App.get() is old     # verify swap sets target
-    True
 
     
 
 Namespaces
 ==========
 
-    >>> ns1 = context.namespace(aSetting)
+    >>> def aSetting(): pass
+    >>> aSetting = setting(aSetting)
+
+    >>> ns1 = namespace(aSetting)
     >>> ns1['foo']
     <function aSetting.foo ...>
 
@@ -440,24 +502,22 @@ Namespaces
     >>> 'bar.spam' in foo
     True
 
-    >>> def handler(cfg,key):
-    ...     print "looking up", cfg, key
+    >>> def handler(inherit, key):
+    ...     print "looking up", key
     ...     return key.__name__
 
-    >>> context.Config.root[foo['*']] = handler
+    >>> State.get()[foo['*']] = handler
 
     >>> foo.baz()
-    looking up <...context.Config object ...> <function aSetting.foo.baz ...>
+    looking up <function aSetting.foo.baz ...>
     'aSetting.foo.baz'
 
     >>> foo.bar.bang()  # 2nd level rule lookup
-    looking up <...context.Config ...> <function aSetting.foo.bar.bang ...>
+    looking up <function aSetting.foo.bar.bang ...>
     'aSetting.foo.bar.bang'
 
-    >>> ns1.whee()
-    Traceback (most recent call last):
-      ...
-    KeyError: <function aSetting.whee ...>
+    >>> print ns1.whee()  # aSetting returns nothing, so so does this
+    None
 
     >>> foo['really.really.long.name.needing.multiple.rules']()
     looking up ...foo.really.really.long.name.needing.multiple.rules ...
@@ -475,7 +535,6 @@ Actions
       ...
     RuntimeError: No Action is currently active
 
-    >>> cfg = context.Config()
     >>> act = context.Action()
 
     >>> class TestResource(object):
@@ -539,19 +598,16 @@ Actions
     >>> act.__exit__(TypeError,TypeError("Foo"),None)
     Tearing down [...'exceptions.TypeError'..., 'Foo', 'None']
 
-    >>> c1 = context.Config()
     >>> def my_factory():
-    ...     if context.Config.get() is c1:
-    ...         print "Factory running in c1"
+    ...     print "Factory running"
     ...     return 42
-    >>> c1[res] = my_factory
-    >>> c1[res]
-    <function my_factory ...>
 
-    >>> act = context.Action(c1)
+    >>> act = context.Action()
     >>> act.__enter__()
+    >>> State.get()[res] = my_factory
+
     >>> res()
-    Factory running in c1
+    Factory running
     42
     >>> res()
     42
@@ -567,15 +623,19 @@ Actions
       ...
     RuntimeError: Foo!
 
-    >>> def recursive_factory(): return recursive_resource()
-    >>> recursive_resource = context.resource(recursive_factory)
-    >>> recursive_resource()    # doctest: +NORMALIZE_WHITESPACE
-    Traceback (most recent call last):
-      ...
-    RuntimeError: Circular dependency for recursive_factory (via <function
-    recursive_factory ...>)
+    >>> class Success(object):
+    ...     def __enter__(self):
+    ...         print "entering"    
+    ...         return 99
+    ...     def __exit__(self, *exc):
+    ...         print "exiting", exc
 
+    >>> res3 = context.resource(lambda: Success())
+    >>> res3()
+    entering
+    99
     >>> act.__exit__(None,None,None)  # no __exit__ for failed __enter__
+    exiting (None, None, None)
 
 
 Source Lines
@@ -643,7 +703,7 @@ An example context manager::
     ...     print "after"
     >>> demo_manager = context.manager(demo_manager)
 
-Applied to a simple function usign ``with_()``::
+Applied to a simple function using ``with_()``::
 
     >>> def something(ob):
     ...     print "got", ob

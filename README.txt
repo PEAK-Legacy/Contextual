@@ -173,3 +173,30 @@ better functionality.
 
 For more details, please consult the Contextual developer's guide.
 
+
+TODO
+----
+
+* Tests for ``using`` and ``only`` context managers
+
+* ``namespace`` would be better off not being a proxy, and should maybe accept
+  type info.
+
+* Configuration files and "how to specify values" protocol -- e.g. parameter
+  should probably accept param(value) vs. param(lambda: value)
+
+* Scoped services
+
+* Components w/state binding and **kw attrs update on init
+
+* Force Action __exit__ operations to occur in a purely static context (i.e.
+  no dynamic state available) to avoid re-registration, indirect access to
+  finalized resources, etc.
+
+* Detect value calculation cycles
+
+* Resource pooling/caching
+
+
+
+

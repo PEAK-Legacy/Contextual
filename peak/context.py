@@ -5,9 +5,9 @@ from peak.util.proxies import ObjectWrapper
 from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
-    'Service', 'replaces', 'Config', 'setting', 'SettingConflict',
-    'Action', 'resource', 'namespace', 'App', 'parameter', 'switch_to',
-    'Delegated', 'manager', 'reraise', 'with_', 'call_with',
+    'Service', 'replaces', 'setting', 'RuleConflict', 'DynamicRuleError'
+    'State', 'Action', 'resource', 'namespace', 'parameter', 'using', 'only',
+    'lookup', 'manager', 'reraise', 'with_', 'call_with',
 ]
 
 
@@ -30,93 +30,339 @@ def qname(f):
         return '%s.%s' % (m,f.__name__)
     return f.__name__
 
-class SettingConflict(Exception):
-    """Attempt to set conflicting value in a scope"""
 
-class NoValueFound(LookupError):
-    """No value was found for the setting or resource"""
+class RuleConflict(Exception):
+    """Attempt to set a rule that causes a visible conflict in the state"""
 
-
-
-
-_params = {}
-
-def _get_param(key):
-    return _params[get_ident()][key]
-
-def _set_param(key, value):
-    ctx = _params.setdefault(get_ident(),{})
-    if value is NOT_GIVEN:
-        if key in ctx:
-            del ctx[key]
-    else:
-        ctx[key] = value
-
-class _ParamContext(object):
-    """Context manager that temporarily changes a parameter value"""
-
-    def __init__(self, key, value):
-        self.key = key
-        self.value = value
-
-    def __enter__(self):
-        try:
-            self.old = _get_param(self.key)
-        except KeyError:
-            self.old = NOT_GIVEN            
-        _set_param(self.key, self.value)
-        return self.value
-
-    def __exit__(self,typ,val,tb):
-        _set_param(self.key, self.old)
+class DynamicRuleError(Exception):
+    """A fallback or wildcard rule attempted to access dynamic state"""
 
 
 
+class State(object):
+    """A thread's current configuration and state"""
 
+    def __new__(cls, *rules, **attrs):
+        return attrs and object.__new__(cls) or empty()
 
+    def __init__(self, *rules, **attrs):
+        """Create an empty state with `rules` in effect"""
+        self.__dict__.update(attrs)
+        # for rule in rules: self += rule
 
+    def __getitem__(self, key):
+        """Get the rule for `key`"""
+        return self.getRule(key)
 
+    def __setitem__(self, key, rule):
+        """Set the rule for `key`"""
+        return self.setRule(key, rule)
+
+    def swap(self):
+        """Make this state current and return the old one"""
+        # this method is replaced on each instance!
+        raise NotImplementedError
+
+    def child(self, *rules):
+        """Return a new child state of this one, with `rules` in effect"""
+        # this method is replaced on each instance!
+        raise NotImplementedError
+
+    def get(key=None):
+        """Return the current state (no args) or a current rule (w/key)"""
+        # this method is replaced later below
+        raise NotImplementedError
+
+    get = staticmethod(get)
 
 
 
 
-def parameter(func):
-    """Decorator to create a dynamic parameter object from a function
-    """
-    _gp = _get_param
-    _sp = _set_param
-    _ng = NOT_GIVEN
-    _pc = _ParamContext
-
-    def impl(value=NOT_GIVEN):
-        if value is _ng: 
-            try:
-                return _gp(func)
-            except KeyError:
-                value = func()
-                _sp(func, value)
-                return value
-        return _pc(func, value)
-
-    return _clonef(func, impl)
 
 
-_delegates = parameter(lambda: [])
+class using(object):
+    """Thing that can be added to a state to set its rules"""
 
-class Delegated(object):
-    """Allow replacing ``__enter__`` and ``__exit__`` w/a ``__context__()``"""
+    __slots__ = ['_saved_state', '__rules__']
 
-    __slots__ = ()  # pure mixin class
+    def __init__(self, *rules):
+        self.__rules__ = ()
+        for r in rules:
+            self.__rules__ += r.__rules__
+
+    def apply_to(self, state):
+        for key, val in self.__rules__:
+            state[key] = val
+        return state.swap()
 
     def __enter__(self):
-        mgr = self.__context__()
-        _delegates().append((self,mgr))
-        return mgr.__enter__()
+        self._saved_state = self.apply_to(State.get().child())
 
     def __exit__(self, typ, val, tb):
-        ctx, mgr = _delegates().pop()
-        assert ctx is self, "context stack is corrupted"
-        return mgr.__exit__(typ, val, tb)
+        self._saved_state.swap()
+        del self._saved_state
+
+
+class only(using):
+    def __enter__(self):
+        self._saved_state = self.apply_to(State())
+
+class _using_var(using):
+    """Sets a single rule"""
+    def __init__(self, key, value):
+        self.__rules__ = (key, value),
+
+
+'''with service_inst:
+with variable(value):
+with context.using( service_inst, variable(val), other_var(other_val) ):
+with context.only(
+    service_inst, variable(val), other_var(other_val)
+):
+'''
+
+noop = lambda rule: rule
+mngr = lambda rule: Action.manage(rule())
+
+def setting(func):
+    """Decorator to create a configuration setting from a function"""
+    return make_var(func, State.get, noop)
+
+def parameter(func):
+    """Decorator that makes a function into a dynamic parameter"""
+    return make_var(_clonef(func, lambda: func), lookup, apply)
+
+def resource(func):
+    """Decorator to create a configuration setting from a function
+    """
+    return make_var(_clonef(func, lambda: func), lookup, mngr)
+
+
+def make_var(func, lookup, application, name=None):
+
+    NG = NOT_GIVEN
+    UV = _using_var
+
+    def impl(value=NG):
+        if value is NG:
+            return lookup(impl)
+        else:
+            return UV(impl, value)
+
+    def fallback(inherit, key):
+        if inherit is None:
+            return func()
+        else:
+            return inherit(key)
+
+    impl = _clonef(func, impl, name)
+    impl.__fallback__ = fallback
+    impl.__apply__ = application
+    impl.__lookup__ = lookup
+    return impl
+
+
+def _let_there_be_state():
+    """Create a world of states, manipulable only by exported functions"""
+
+    states = {}
+
+    def _swap(what):
+        this_thread = get_ident()
+        old = states.setdefault(this_thread, what)
+        states[this_thread] = what
+        return old
+
+    def lookup(key):
+        """Return the value of `key` in the current state"""
+        try:
+            state, getRule, lookup = states[get_ident()]
+        except KeyError:
+            new_state().swap()
+            state, getRule, lookup = states[get_ident()]
+        return lookup(key)
+
+    def get(key=None):
+        try:
+            state, getRule, lookup = states[get_ident()]
+        except KeyError:
+            new_state().swap()
+            state, getRule, lookup = states[get_ident()]
+        if key is None:
+            return state
+        return getRule(key)
+
+    def disallow(key):
+        raise DynamicRuleError(
+            "default rule tried to read dynamic state", key
+        )
+
+    def empty():
+        """Return a new, empty State instance"""
+        return new_state()
+
+
+
+    def new_state(inherit=None, inheritedDistances=None, propagate=None):
+        buffer = {}
+        rules = {}
+        values = {}
+        distances = {}
+        computing = {}
+        get_stack, set_stack = computing.get, computing.setdefault
+
+        def getRule(key):
+            """Get my rule for `key`"""
+            try:
+                rule = rules[key]
+            except KeyError:
+                try:
+                    rule = buffer[key]
+                except KeyError:
+                    rule = buffer.setdefault(key, __fallback(key))
+
+                # snapshot the currently-set value - this is thread-safe
+                # because setdefault is atomic, so rules[key] will only *ever*
+                # have one value, even if it's not the one now in the buffer
+                #
+                rule = rules.setdefault(key, rule)
+                if key not in distances:
+                    if inherit and inherit(key)==rule:
+                        distances.setdefault(key, inheritedDistances[key]+1)
+                    else:
+                        distances[key] = 0
+
+            if computing:
+                # Ensure that any value being computed in this thread has a
+                # maximum propagation distance no greater than this rule's
+                # distance.
+                stack = get_stack(get_ident())
+                if stack:
+                    stack[-1] = min(stack[-1], distances[key])
+
+            return rule
+
+
+
+        def setRule(key, rule):
+            """Set my rule for `key`, or raise an error if inconsistent"""
+            buffer[key] = rule
+            # as long as a snapshot hasn't been taken yet, `old` will be `rule`
+            old = rules.get(key, rule)
+            if old is not rule and old != rule:
+                raise RuleConflict(key, old, rule)
+
+        def getValue(key):
+            """Get the dynamic value of `key`"""
+            try:
+                value = values[key]
+
+            except KeyError:
+                this_thread = get_ident()
+                rule = getRule(key)     # this ensures distances[key] is known
+
+                stack = set_stack(this_thread, [])
+                stack.append(distances[key])
+
+                try:
+                    value = key.__apply__(rule)
+                finally:
+                    distance = stack.pop()
+                    if not stack:
+                        del computing[this_thread]
+                    else:
+                        stack[-1] = min(stack[-1], distance)
+
+                value = publish(distance, key, value)
+
+            else:
+                if computing:
+                    stack = get_stack(get_ident())
+                    if stack:
+                        stack[-1] = min(stack[-1], distances[key])
+
+            return value
+
+
+
+        def publish(distance, key, value):
+            """Accept value from this state or child, and maybe propagate it"""
+
+            # It's safe to update distances here because no thread can depend
+            # on the changed distance for propagation unless *some* thread has
+            # already finished the relevant computation -- i.e., done this very
+            # update.  Otherwise, there would be no values[key], therefore the
+            # thread would have to follow the same code path, ending up by
+            # being the thread doing this update!  Ergo, this is a safe update.
+            #
+            distances[key] = distance
+
+            if distance and propagate:
+                # pass it up to the parent, but use the value the parent has.
+                # therefore, the parent at "distance" height from us will be
+                # the arbiter of the value for all its children, ensuring that
+                # exactly one value is used for the entire subtree!
+                #
+                value = propagate(distance-1, key, value)
+
+            # Return whatever value wins at this level to our children
+            return values.setdefault(key, value)
+
+
+        def child():
+            """Return a new child state"""
+            s = new_state(getRule, distances, publish)
+            s.parent = this
+            return s
+
+        def __fallback(key):
+            """Compute the fallback for key"""
+            old = _swap(disabled)
+            try:
+                return key.__fallback__(inherit, key)
+            finally:
+                _swap(old)
+
+
+
+
+        def swap():
+            state, get, lookup = _swap(enabled)
+            if lookup is disallow:
+                _swap((state, get, lookup))
+                raise DynamicRuleError(
+                    "default rule tried to change states"
+                )
+            return state
+
+        this = State(getRule=getRule, setRule=setRule, swap=swap, child=child)
+
+        enabled  = this, getRule, getValue
+        disabled = this, getRule, disallow
+
+        return this
+
+    return lookup, staticmethod(get), empty
+
+
+lookup, State.get, empty = _let_there_be_state()
+del _let_there_be_state
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -139,12 +385,14 @@ class _GeneratorContextManager(object):
                 raise RuntimeError("generator didn't stop")
         else:
             try:
-                cm = _exc_info((typ,value,traceback)); cm.__enter__()
+                old = _swap_exc_info((typ, value,traceback))
                 try:
                     self.gen.next()
                 finally:
-                    cm.__exit__(None, None, None)                       
+                    _swap_exc_info(old)
+
                 raise RuntimeError("generator didn't stop after throw()")
+
             except StopIteration, exc:
                 # Suppress the exception *unless* it's the same exception that
                 # was passed to throw().  This prevents a StopIteration
@@ -160,13 +408,11 @@ class _GeneratorContextManager(object):
                 if sys.exc_info()[1] is not value:
                     raise
 
-_exc_info = parameter(lambda: (None, None, None))
-
 def manager(func):
-    """Emulate 2.5 ``@contextli.contextmanager`` decorator"""
+    """Emulate 2.5 ``@contextlib.contextmanager`` decorator"""
     gcm = _GeneratorContextManager
     return rewrap(func, lambda *args, **kwds: gcm(func(*args, **kwds)))
-  
+
 def with_(ctx, func):
     """Perform PEP 343 "with" logic for Python versions <2.5
 
@@ -193,7 +439,7 @@ def with_(ctx, func):
 
 def reraise():
     """Reraise the current contextmanager exception, if any"""
-    typ,val,tb = _exc_info()
+    typ,val,tb = _exc_info.get(get_ident(), nones)
     if typ:
         try:
             raise typ,val,tb
@@ -244,13 +490,14 @@ def call_with(ctxmgr):
 
 
 
-def get(cls):
-    """Get the "current instance" of this service class"""
-    try:
-        return _get_param(cls)
-    except KeyError:
-        _set_param(cls, cls.__default__())
-        return _get_param(cls)
+_exc_info = {}
+nones = None, None, None
+
+def _swap_exc_info(data):
+    this_thread = get_ident()
+    old = _exc_info.get(this_thread, nones)
+    _exc_info[this_thread] = data
+    return old
 
 
 def redirect_attribute(cls, name, payload):
@@ -269,9 +516,8 @@ def redirect_attribute(cls, name, payload):
 
 _ignore = {
     '__name__':1, '__module__':1, '__return__':1, '__slots__':1, 'get':1,
-    '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1, 
+    '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1,
 }.get
-
 
 
 
@@ -290,246 +536,82 @@ class ServiceClass(type):
     def __new__(meta, name, bases, cdict):
         cls = super(ServiceClass, meta).__new__(meta, name, bases, cdict)
         if 'get' not in cdict:
-            cls.get = staticmethod(classmethod(get).__get__(None, cls))
+            cls.get = staticmethod(classmethod(lookup).__get__(None, cls))
         for k, v in cdict.items():
             if not isinstance(v, (classmethod,staticmethod))and not _ignore(k):
                 redirect_attribute(cls, k, v)
         return cls
 
 
-class Service(Delegated):
+class Service(using):
     """A replaceable, thread-local singleton"""
 
     __slots__ = ()  # pure mixin class
     __metaclass__ = ServiceClass
 
-    def __context__(self):
-        return _ParamContext(self.get.im_self, self)
+    __rules__ = property(lambda self: ((self.get.im_self, self.getself),))
+
+    def getself(self): return self
+
+    def __init__(self):
+        pass
 
     def __default__(cls):
-        return with_(App.get().config, lambda cfg: cfg[cls]())
-
-    __default__ = classmethod(__default__)
-    
-    def __config_fallback__(cls, scope, key):
-        if scope.parent is None:
-            return cls
-        return scope.parent[key]
-
-    __config_fallback__ = classmethod(__config_fallback__)
-
-
-
-
-
-
-
-
-
-class Config(Service):
-    """A write-until-read, thread-safe, lock-free mapping with inheritance"""
-
-    __slots__ = 'parent', 'snapshot', 'buffer'
-
-    def __init__(self, parent=NOT_GIVEN):
-        if parent is NOT_GIVEN:
-            parent = self.get()
-        self.parent = parent
-        self.snapshot = {}
-        self.buffer = {}
-
-    def __default__(cls):
-        return cls.root
+        return cls()
 
     __default__ = classmethod(__default__)
 
-    def __getitem__(self,key):
-        try:
-            return self.snapshot[key]
-        except KeyError:
-            try:
-                current = self.buffer[key]
-            except KeyError:
-                fallback = key.__config_fallback__ #getattr(, default_fallback)
-                current = self.buffer.setdefault(key, fallback(self, key))
+    def __fallback__(cls, inherit, key):
+        if inherit: return inherit(key)
+        return cls.__default__
 
-            # snapshot the currently-set value - this is thread-safe
-            # because setdefault is atomic, so data[key] will only *ever*
-            # have one value, even if it's not the one now in the writebuf
-            return self.snapshot.setdefault(key, current)
+    __fallback__ = classmethod(__fallback__)
 
-    def __setitem__(self, key, val):
-        self.buffer[key] = val
-        # as long as data[key] hasn't been snapshotted, `old` will be `val`
-        old = self.snapshot.get(key, val)   
-        if old is not val and old != val:
-            raise SettingConflict(key, old, val)
-
-Config.root = Config(None)
-
-def setting(func):
-    """Decorator to create a configuration setting from a function
-    """
-    return make_var(func, Config)
-
-def resource(func):
-    """Decorator to create a configuration setting from a function
-    """
-    return make_var(_clonef(func, lambda scope, key: func), Action)
-
-
-def make_var(func, scope, name=None):
-
-    _get = scope.get
-
-    def impl():
-        return _get()[impl]
-
-    def fallback(scope, key):
-        parent = scope.parent
-        if parent is None:
-            return func(scope, key)
-        return parent[key]
-        
-    impl = _clonef(func, impl, name)
-    impl.__config_fallback__ = fallback
-    impl.__scope__ = scope
-
-    return impl
-
-
-def default_fallback(scope, key):
-    """Fallback used for a namespace's top-level settings' wildcard results"""
-    parent = scope.parent
-    if parent is None:
-        raise KeyError(key)
-    return parent[key]
+    __apply__ = staticmethod(apply)
 
 
 
 
 class Action(Service):
-    """Service for managing transaction-scope resources"""
+    """Service for managing transaction-scoped resources"""
 
-    def __init__(self, config=None):
-        self.managers = []
-        self.cache = {}
+    def __init__(self):
+        self.managers = None
         self.status = {}
-        if config is None:
-            config = Config.get()
-        self.config = config
 
     def __default__(cls):
         raise RuntimeError("No Action is currently active")
-
-    __default__ = classmethod(__default__)   
+    __default__ = classmethod(__default__)
 
     def __enter__(self):
-        if self.managers:
+        if self.managers is not None:
             raise RuntimeError("Action is already in use")
-        self.manage(None, _ParamContext(self.get.im_self, self))
+        self.managers = []
+        return Service.__enter__(self)
 
     def __exit__(self, *exc):
-        if not self.managers:
+        if self.managers is None:
             raise RuntimeError("Action is not currently in use")
 
-        managers = self.managers
-        cache = self.cache
-
+        Service.__exit__(self, *exc)
+        managers, self.managers = self.managers, None
         while managers:
-            key, ctx = managers.pop()
-            ctx.__exit__(*exc)  # XXX how do we handle errors?
-            #if key in cache:
-            #    del cache[key]
-            #    status[key] = -1
-        self.cache.clear()
+            managers.pop().__exit__(*exc)  # XXX how do we handle errors?
 
-
-
-
-
-
-    def __getitem__(self,key):
-        try:
-            res = self.cache[key]
-        except KeyError:
-            cfg = self.config
-            factory = cfg[key]
-
-            status = self.status.get(key)
-            if status:
-                raise RuntimeError(
-                    "Circular dependency for %s (via %s)"
-                    % (qname(key),factory)
-                )
-
-            self.status[key] = 1    # recursion guard
-            try:
-                res = self.cache[key] = self.manage(
-                    key, with_(cfg, lambda arg: factory())
-                )
-            finally:
-                del self.status[key]
-        return res
-
-    def manage(self, key, ob):
+    def manage(self, ob):
         try:
             enter = ob.__enter__
         except AttributeError:
             return ob
         ctx = ob
         ob = ctx.__enter__()
-
         # don't call __exit__ unless __enter__ succeeded
         # (if there was an error, we wouldn't have gotten this far)
-        self.managers.append((key,ctx))
+        self.managers.append(ctx)
         return ob
 
+        # XXX return self.manage(key, ob)
 
-
-
-
-
-class App(object):
-    """Top-level scope for all parameters and services"""
-
-    __metaclass__ = Service.__class__
-
-    def __init__(self, config=NOT_GIVEN):
-        self.params = {App: self}
-        if config is NOT_GIVEN:
-            config = Config(Config.get())
-        self.config = config
-        
-    def __default__(cls):
-        new = cls()
-        new.params = _params.setdefault(get_ident(), new.params)
-        return new
-
-    __default__ = classmethod(__default__)
-
-    def __getitem__(self, key):
-        return self.config[key]
-
-    def __setitem__(self, key, value):
-        self.config[key] = value
-
-    def swap(self):
-        """Make this the current App, returning the previous current App"""
-        old = App.get()
-        _params[get_ident()] = self.params
-        return old
-
-    '''def copy(self):
-        """Return a new App based on the same config"""
-        return type(self)(self.config)
-
-    def clone(self):
-        new = self.copy()
-        npsd = new.params.setdefault
-        for k,v in self.params.iteritems():
-            npsd(k, v)
-        return new'''
 
 class namespace(ObjectWrapper):
     """Decorator that wraps a setting or resource w/an extensible namespace"""
@@ -554,18 +636,18 @@ class namespace(ObjectWrapper):
         except KeyError:
             # TODO: verify syntax of key: nonempty, valid chars, ...?
             me = self.__subject__
-            impl = make_var(me, me.__scope__, "%s.%s" % (self.__name__, key))
+            impl = make_var(me, me.__lookup__, me.__apply__, "%s.%s" % (self.__name__, key))
 
             if key=='*':
                 if hasattr(me, '__namespace__'):
                     ns = me.__namespace__
-                    impl.__config_fallback__ = lambda m,k: m[ns['*']]
+                    impl.__fallback__ = lambda i,k: State.get(ns['*'])
                 else:
-                    impl.__config_fallback__ = lambda m,k: default_fallback
+                    impl.__fallback__ = lambda i,k: default_fallback(me)
             else:
-                impl.__config_fallback__ = lambda m,k: m[self['*']](m,k)
-            impl.__namespace__ = self
+                impl.__fallback__ = lambda i,k: State.get(self['*'])(i,k)
 
+            impl.__namespace__ = self
             nsd(self)[key] = impl = type(self)(impl)
             return impl
 
@@ -579,7 +661,7 @@ class namespace(ObjectWrapper):
         if '.' in key:
             for key in key.split('.'):
                 if key not in d:
-                    return False       
+                    return False
                 d = nsd(d[key])
             else:
                 return True
@@ -589,18 +671,18 @@ class namespace(ObjectWrapper):
         for key in nsd(self):
             if key!='*':
                 yield key
-    
+
 nsd = namespace.__dict__['__dict__'].__get__
 
+def default_fallback(me):
+    """Fallback used for a namespace's top-level settings' wildcard results"""
 
+    def fallback(inherit, key):
+        if inherit is None:
+            return me()
+        return inherit(key)
 
-
-
-
-
-
-
-
+    return fallback
 
 
 
@@ -617,7 +699,7 @@ class Source(object):
     """Object representing a source file (or pseudo-file)"""
 
     __slots__ = "filename", "__weakref__"
-    
+
     def __init__(self, filename, source=None):
         global linecache; import linecache
         self.filename = filename
@@ -631,7 +713,7 @@ class Source(object):
         return Line(linecache.getlines(self.filename)[key], self, key+1)
 
     def __repr__(self):
-        return "Source(%r)" % self.filename   
+        return "Source(%r)" % self.filename
 
     def recode(self, code, offset=0):
         if not isinstance(code, new.code):
@@ -712,8 +794,7 @@ def replaces(target):
 
     # Ensure that context.replaces() is used only once per class suite
     cdict = sys._getframe(1).f_locals
-    if 'get' in cdict:
-        print cdict, target.get
+
     if cdict.setdefault('get', target.get) is not target.get:
         raise ValueError(
             "replaces() must be used only once per class;"
@@ -722,14 +803,15 @@ def replaces(target):
         )
 
 
-def switch_to(app):
-    """Switch to another application, then return to the current one"""
-    old = app.swap()
-    yield None
-    old.swap()
-    reraise()
 
-switch_to = manager(switch_to)
+
+
+
+
+
+
+
+
 
 
 
