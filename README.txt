@@ -177,22 +177,25 @@ For more details, please consult the Contextual developer's guide.
 TODO
 ----
 
-* Tests for ``using`` and ``only`` context managers
+0.7
+ * Tests for ``new()`` and ``empty()`` context managers
 
-* ``namespace`` would be better off not being a proxy, and should maybe accept
-  type info.
+ * ``namespace`` needs testing for different namespace types
 
-* Configuration files and "how to specify values" protocol
+ * << and <<= operator testing for value, expression, and namespace types
 
-* Components w/state binding and **kw attrs update on init
+ * Configuration files
 
-* State __enter__ should lock the state to the current thread, w/o __exit__ or
-  swap() or on_exit being possible from other threads, so that they will be
-  thread-safe.
+ * Components w/state binding and **kw attrs update on init
 
-* Detect value calculation cycles
+0.8
+ * State __enter__ should lock the state to the current thread, w/o __exit__ or
+   swap() or on_exit being possible from other threads, so that they will be
+   thread-safe.
 
-* Resource pooling/caching
+ * Detect value calculation cycles
+
+ * Resource pooling/caching
 
 
 

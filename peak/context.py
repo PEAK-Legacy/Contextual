@@ -1,53 +1,12 @@
 import sys, new
 from thread import get_ident
-from peak.util.symbols import NOT_GIVEN
-from peak.util.proxies import ObjectWrapper
 from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
     'Service', 'replaces', 'value', 'RuleConflict', 'DynamicRuleError'
-    'State', 'Action', 'resource', 'namespace', 'expression', 'using', 'only',
+    'State', 'Action', 'resource', 'expression',
     'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError'
 ]
-
-
-def _clonef(src, impl, name=None):
-    """Create a copy of function `impl` that looks like `src`"""
-    f = new.function(
-        impl.func_code, src.func_globals, name or src.__name__,
-        impl.func_defaults, impl.func_closure
-    )
-    f.__doc__  = src.__doc__
-    f.__dict__ = src.__dict__.copy()
-    return f
-
-def qname(f):
-    if hasattr(f,'__module__'):
-        m = f.__module__
-    else:
-        m = f.func_globals.get('__name__')
-    if m:
-        return '%s.%s' % (m,f.__name__)
-    return f.__name__
-
-class RuleConflict(Exception):
-    """Attempt to set a rule that causes a visible conflict in the state"""
-
-class DynamicRuleError(Exception):
-    """A fallback or wildcard rule attempted to access dynamic state"""
-
-class ScopeError(Exception):
-    """A problem with scoping occurred"""
-
-_exc_info = {}
-nones = None, None, None
-
-def _swap_exc_info(data):
-    this_thread = get_ident()
-    old = _exc_info.get(this_thread, nones)
-    _exc_info[this_thread] = data
-    return old
-
 
 def redirect_attribute(cls, name, payload):
     meta = type(cls)
@@ -67,6 +26,7 @@ _ignore = {
     '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1,
 }.get
 
+
 class ServiceClass(type):
 
     def __new__(meta, name, bases, cdict):
@@ -79,7 +39,6 @@ class ServiceClass(type):
         return cls
 
 
-
 class State(object):
     """A thread's current configuration and state"""
 
@@ -88,10 +47,9 @@ class State(object):
     def __new__(cls, *rules, **attrs):
         return attrs and object.__new__(cls) or empty()
 
-    def __init__(self, *rules, **attrs):
+    def __init__(self, **attrs):
         """Create an empty state with `rules` in effect"""
         self.__dict__.update(attrs)
-        # for rule in rules: self += rule
 
     def __getitem__(self, key):
         """Get the rule for `key`"""
@@ -103,28 +61,24 @@ class State(object):
 
     def swap(self):
         """Make this state current and return the old one"""
-        # this method is replaced on each instance!
-        raise NotImplementedError
+        raise NotImplementedError   # this method is replaced on each instance
 
     def child(self, *rules):
         """Return a new child state of this one, with `rules` in effect"""
-        # this method is replaced on each instance!
-        raise NotImplementedError
+        raise NotImplementedError   # this method is replaced on each instance
 
     def __enter__(self):
         """Make this state a single-use nested state"""
-        # this method is replaced on each instance!
-        raise NotImplementedError
+        raise NotImplementedError   # this method is replaced on each instance
 
     def __exit__(self, typ, val, tb):
         """Close this state and invoke exit callbacks"""
-        # this method is replaced on each instance!
-        raise NotImplementedError
+        raise NotImplementedError   # this method is replaced on each instance
 
     def on_exit(self, callback):
         """Add a `callback(typ,val,tb)` to be invoked at ``__exit__`` time"""
-        # this method is replaced on each instance!
-        raise NotImplementedError
+        raise NotImplementedError   # this method is replaced on each instance
+
 
     def get(key=None):
         """Return the current state (no args) or a current rule (w/key)"""
@@ -136,6 +90,24 @@ class State(object):
     parent = None
 
 
+class RuleConflict(Exception):
+    """Attempt to set a rule that causes a visible conflict in the state"""
+
+class DynamicRuleError(Exception):
+    """A fallback or wildcard rule attempted to access dynamic state"""
+
+class ScopeError(Exception):
+    """A problem with scoping occurred"""
+
+
+_exc_info = {}
+nones = None, None, None
+
+def _swap_exc_info(data):
+    this_thread = get_ident()
+    old = _exc_info.get(this_thread, nones)
+    _exc_info[this_thread] = data
+    return old
 
 
 
@@ -143,101 +115,6 @@ class State(object):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class using(object):
-    """Thing that can be added to a state to set its rules"""
-
-    __slots__ = ['_saved_state', '__rules__']
-
-    def __init__(self, *rules):
-        self.__rules__ = ()
-        for r in rules:
-            self.__rules__ += r.__rules__
-
-    def apply_to(self, state):
-        for key, val in self.__rules__:
-            state[key] = val
-        self._saved_state = state.__enter__()
-
-    def __enter__(self):
-        self.apply_to(State.child())
-
-    def __exit__(self, typ, val, tb):
-        self._saved_state.__exit__(typ, val, tb)
-        del self._saved_state
-
-class only(using):
-    def __enter__(self):
-        self.apply_to(State())
-
-class _using_var(using):
-    """Sets a single rule"""
-    def __init__(self, key, value):
-        self.__rules__ = (key, value),
-    def __enter__(self):
-        self.apply_to(State.child())
-        try: return lookup(self.__rules__[0][0])
-        except: self.__exit__(*sys.exc_info()); raise
-
-'''with context.using( service_inst, variable(val), other_var(other_val) ):
-with context.only(
-    service_inst, variable(val), other_var(other_val)
-):'''
-
-
-noop = lambda key, rule: rule
-mngr = lambda key, rule: Action.manage(rule())
-call = lambda key, rule: rule()
-
-def value(func):
-    """Decorator to create a configuration value from a function"""
-    return make_var(func, State.get, noop)
-
-def expression(func):
-    """Decorator to create a configuration expression from a function"""
-    return make_var(_clonef(func, lambda: func), lookup, call)
-
-
-def make_var(func, lookup, application, name=None):
-
-    NG = NOT_GIVEN
-    UV = _using_var
-
-    def impl(value=NG):
-        if value is NG:
-            return lookup(impl)
-        else:
-            return UV(impl, value)
-
-    def fallback(inherit, key):
-        if inherit is None:
-            return func()
-        else:
-            return inherit(key)
-
-    impl = _clonef(func, impl, name)
-    impl.__fallback__ = fallback
-    impl.__apply__ = application
-    impl.__lookup__ = lookup
-    return impl
 
 
 
@@ -613,6 +490,10 @@ def call_with(ctxmgr):
 
 
 
+noop = lambda key, rule: rule
+mngr = lambda key, rule: Action.manage(rule())
+call = lambda key, rule: rule()
+
 class Service(object):
     """A replaceable, thread-local singleton"""
 
@@ -629,29 +510,25 @@ class Service(object):
         return cls.__default__
 
     __fallback__ = classmethod(__fallback__)
-
     __apply__ = staticmethod(call)
 
     def new(cls, factory=None):
         factory = factory or cls
-        # we use a lambda below to ensure that the rule is unique; that way,
-        # we are guaranteed to get a *new* instance of the service in the
-        # scope, rather than reusing the existing one.
-        return _using_var(cls.get.im_self, lambda: factory())
+        state = State.child().__enter__()
+        try:
+            # we use a lambda below to ensure that the rule is unique; that way,
+            # we are guaranteed to get a *new* instance of the service in the
+            # scope, rather than reusing the existing one.
+            state[cls.get.im_self] = lambda: factory()
+            yield cls.get()
+            reraise()
+        except:
+            state.__exit__(*sys.exc_info())
+            raise
+        else:
+            state.__exit__(None, None, None)
 
-    new = classmethod(new)
-
-
-
-
-
-
-
-
-
-
-
-
+    new = classmethod(manager(new))
 
 
 class Scope(Service):
@@ -687,7 +564,7 @@ class Scope(Service):
 
     def expression(cls, func):
         """Decorator to create a scoped expression"""
-        return make_var(_clonef(func, lambda: func), lookup, cls.__compute__)
+        return expression(func, cls.__compute__)
 
     expression = classmethod(expression)
 
@@ -736,18 +613,46 @@ resource = Action.expression
 
 
 
-class namespace(ObjectWrapper):
-    """Decorator that wraps a setting or resource w/an extensible namespace"""
+def nop(): pass
 
-    __slots__ = '__dict__'
+class value(object):
+    """Decorator that turns a function into a contextual variable"""
+
+    # Pretend to be a function, as far as inspect/pydoc are concerned
+    __class__ = type(nop)
+    func_code = nop.func_code
+    func_defaults = ()
+
+    def __init__(self, func):
+        self.__function__ = func
+        self.__module__   = func.__module__
+        self.__name__     = func.__name__
+        self.__doc__      = func.__doc__
+        self.__contents__ = {}
 
     def __getattr__(self, key):
-        try:
-            return nsd(self)[key]
-        except KeyError:
-            if key.startswith('__') and key.endswith('__'):
-                return getattr(self.__subject__, key)
-            return self[key]
+        if key.startswith('__') and key.endswith('__'):
+            raise AttributeError(key)
+        return self[key]
+
+    def __fallback__(self, inherit, key):
+        if inherit is None:
+            return self.__function__()
+        else:
+            return inherit(key)
+
+    def __repr__(self):
+        if self.__module__: return self.__module__ + '.' + self.__name__
+        return self.__name__
+
+    __apply__ = staticmethod(noop)
+    __call__ = State.get
+    __lookup__ = staticmethod(State.get)
+    __namespace__ = None
+
+    def __iter__(self):
+        return iter([key for key in self.__contents__ if key!='*'])
+
 
     def __getitem__(self,key):
         if '.' in key:
@@ -755,47 +660,55 @@ class namespace(ObjectWrapper):
                 self = self[key]
             return self
         try:
-            return nsd(self)[key]
+            return self.__dict__[key]
         except KeyError:
             # TODO: verify syntax of key: nonempty, valid chars, ...?
-            me = self.__subject__
-            impl = make_var(me, me.__lookup__, me.__apply__, "%s.%s" % (self.__name__, key))
+            impl = type(self)(self)
+            impl.__name__ = "%s.%s" % (self.__name__, key)
 
             if key=='*':
-                if hasattr(me, '__namespace__'):
-                    ns = me.__namespace__
+                if self.__namespace__ is not None:
+                    ns = self.__namespace__
                     impl.__fallback__ = lambda i,k: State.get(ns['*'])
                 else:
-                    impl.__fallback__ = lambda i,k: default_fallback(me)
+                    impl.__fallback__ = lambda i,k: default_fallback(self.__function__)
             else:
                 impl.__fallback__ = lambda i,k: State.get(self['*'])(i,k)
 
             impl.__namespace__ = self
-            nsd(self)[key] = impl = type(self)(impl)
+            self.__dict__[key] = self.__contents__[key] = impl
             return impl
 
-
-
-
     def __contains__(self,key):
-        d = nsd(self)
+        d = self.__contents__
         if key in d:
             return True
         if '.' in key:
             for key in key.split('.'):
                 if key not in d:
                     return False
-                d = nsd(d[key])
+                d = d[key].__contents__
             else:
                 return True
         return False
 
-    def __iter__(self):
-        for key in nsd(self):
-            if key!='*':
-                yield key
 
-nsd = namespace.__dict__['__dict__'].__get__
+
+
+class expression(value):
+    __slots__ = []
+
+    def __init__(self, func, apply=call):
+        value.__init__(self, func)
+        self.__function__ = lambda: func
+        self.__apply__ = apply
+
+    __call__ = lookup
+
+    def __ilshift__(self, rule):
+        State[self] = rule
+        return self
+
 
 def default_fallback(me):
     """Fallback used for a namespace's top-level settings' wildcard results"""
@@ -806,6 +719,11 @@ def default_fallback(me):
         return inherit(key)
 
     return fallback
+
+
+
+
+
 
 
 

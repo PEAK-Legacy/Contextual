@@ -2,8 +2,8 @@
 ``peak.context`` Internals
 ==========================
 
-    >>> from peak.context import State, lookup, using, only
-    >>> from peak.context import value, expression, namespace
+    >>> from peak.context import State, lookup, value, expression
+    >>> from peak import context
 
 
 Thread testing utility::
@@ -51,7 +51,7 @@ But rules can't be changed once they've been used/read::
 
 
 Values
-========
+======
 
 "Value" settings can be created from functions returning default values::
 
@@ -70,7 +70,7 @@ And of course it can't be changed except to the same value afterward::
     >>> s[a_setting] = 43
     Traceback (most recent call last):
       ...
-    RuleConflict: (<function a_setting ...>, 42, 43)
+    RuleConflict: (...a_setting..., 42, 43)
 
 
 Child States and Setting Inheritance
@@ -263,7 +263,7 @@ state has already been cleared.::
     >>> s.__exit__(None, None, None)
     --> Traceback (most recent call last):
       ...
-    DynamicRuleError: ('default rule or exit function tried to read dynamic state', <function aKey...>)
+    DynamicRuleError: ('default rule or exit function tried to read dynamic state', ...aKey...)
     <--
 
 But the exit operation will be succeed, anyway, no matter how many errors
@@ -458,50 +458,9 @@ And dynamic dependency on a static value::
 
 
 
->>> from peak import context
-
-Function Cloning
-================
-
-The ``_clonef()`` function makes a new function that "looks like" a source
-function (i.e., has the same name, docstring, module, and attributes), but
-whose implementation and arguments come from a different function::
-
-    >>> def source_func(x,y,z):
-    ...     """The doc is here"""
-    ...     return 99
-    >>> source_func.a = 99
-
-    >>> help(source_func)
-    Help on function source_func:
-    <BLANKLINE>
-    source_func(x, y, z)
-        The doc is here...
-
-    >>> def impl(a,b):
-    ...     "foo"
-    ...     return 42
-
-    >>> f3 = context._clonef(source_func, impl)
-
-    >>> help(f3)
-    Help on function source_func:
-    <BLANKLINE>
-    source_func(a, b)
-        The doc is here...
-
-    >>> f3(1,2)
-    42
-
-    >>> f3.a
-    99
-    >>> source_func.a = 57
-    >>> f3.a
-    99
-
 
 Expression Objects
-=================
+==================
 
 ``@context.expression`` is a decorator that turns a zero-argument function into
 a dynamic variable, whose default value in a new context is the function's
@@ -516,35 +475,39 @@ return value when called in that context::
     >>> help(my_param)
     Help on function my_param...:
     <BLANKLINE>
-    my_param(value=NOT_GIVEN)
+    my_param()
         A Parameter...
 
     >>> my_param()
     42
 
-Calling an expression function with an argument returns a context manager that
-temporarily sets the expression to that value (so you can say, e.g.,
-``with my_param(lambda: 99):`` and have it work)::
+Using the ``<<=`` operator on an expression changes the rule for that
+expression, within the current state::
 
-    >>> cm = my_param(lambda: 99)
-    >>> x = cm.__enter__()
+    >>> s = State()
+    >>> s is s.__enter__()
+    True
+    >>> my_param <<= lambda:99
     >>> my_param()
     99
-    >>> cm.__exit__(None, None, None)
+    >>> s.__exit__(None, None, None)
     >>> my_param()
     42
 
-It should also save the un-computed state of an as-yet-unused expression::
+It should not affect the un-computed state of the expression in a context
+where the rule is different::
 
     >>> def p2():
     ...     print "computing"
     ...     return 69
     >>> p2 = expression(p2)
-    >>> cm = p2(lambda: 57)
-    >>> x = cm.__enter__()
+    >>> s = State()
+    >>> s is s.__enter__()
+    True
+    >>> p2 <<= lambda: 57
     >>> p2()
     57
-    >>> cm.__exit__(None, None, None)
+    >>> s.__exit__(None, None, None)
     >>> p2()
     computing
     69
@@ -667,26 +630,22 @@ Service attributes should be settable and deletable, mapped to the instance::
     >>> Dummy.get().foo
     42
 
-
-
     
 
 Namespaces
 ==========
 
     >>> def aSetting(): pass
-    >>> aSetting = value(aSetting)
-
-    >>> ns1 = namespace(aSetting)
+    >>> ns1 = aSetting = value(aSetting)
     >>> ns1['foo']
-    <function aSetting.foo ...>
+    aSetting.foo
 
     >>> foo = ns1['foo']
     >>> foo is ns1['foo']
     True
 
     >>> foo.bar
-    <function aSetting.foo.bar ...>
+    aSetting.foo.bar
     >>> foo.bar is foo['bar']
     True
 
@@ -712,23 +671,25 @@ Namespaces
     >>> State[foo['*']] = handler
 
     >>> foo.baz()
-    looking up <function aSetting.foo.baz ...>
+    looking up aSetting.foo.baz
     'aSetting.foo.baz'
 
     >>> foo.bar.bang()  # 2nd level rule lookup
-    looking up <function aSetting.foo.bar.bang ...>
+    looking up aSetting.foo.bar.bang
     'aSetting.foo.bar.bang'
 
     >>> print ns1.whee()  # aSetting returns nothing, so so does this
     None
 
     >>> foo['really.really.long.name.needing.multiple.rules']()
-    looking up ...foo.really.really.long.name.needing.multiple.rules ...
+    looking up aSetting.foo.really.really.long.name.needing.multiple.rules
     'aSetting.foo.really.really.long.name.needing.multiple.rules'
 
     >>> sorted(foo)
     ['bar', 'baz', 'really']
 
+
+XXX namespaces wrapping expressions, resources, etc.
 
 Scopes
 ======
@@ -782,21 +743,26 @@ created::
     managing None
 
     >>> check2 = MyScope.expression(check_state)
-    >>> context.call_with(using())(lambda x: check2())
+    >>> context.call_with(State.child())(lambda x: check2())
     True
     managing None
 
 Which means that you can't access such an expression from a state where its
 rule has been changed, as that would create a dependency inversion::
-    
-    >>> context.call_with(check2(lambda:check_state()))(lambda x: check2())
+
+    >>> s = State.child()
+    >>> s is s.__enter__()
+    True
+
+    >>> check2 <<= lambda:check_state()
+    >>> check2()
     Traceback (most recent call last):
       ...
     ScopeError: Redefined rule in sub-state
-    
+
+    >>> s.__exit__(None, None, None)
     >>> new.__exit__(None, None, None)
     exiting None None None
-
 
 TODO: prove that manage() has to be called without an error to enable atexit()
 
@@ -830,11 +796,6 @@ Actions
     >>> context.Action.get() is act
     True
 
-    ##>>> anew.__enter__()
-    ##Traceback (most recent call last):
-    ##  ...
-    ##RuntimeError: Action is already in use
-
     >>> r1 = res()
     Setting up
 
@@ -853,11 +814,7 @@ Actions
       ...
     RuntimeError: No Action is currently active
 
-    ##>>> anew.__exit__(None,None,None)
-    ##Traceback (most recent call last):
-    ##  ...
-    ##RuntimeError: Action is not currently in use
-
+    >>> anew = context.Action.new()
     >>> act = anew.__enter__()
     >>> r = res()
     Setting up
@@ -876,13 +833,13 @@ Actions
     False
 
     >>> anew.__exit__(TypeError,TypeError("Foo"),None)
-    Tearing down [...'exceptions.TypeError'..., 'Foo', 'None']
+    Tearing down [...'exceptions.TypeError'..., 'Foo', ...]
 
     >>> def my_factory():
     ...     print "Factory running"
     ...     return 42
 
-    ##>>> act = context.Action()
+    >>> anew = context.Action.new()
     >>> act = anew.__enter__()
     >>> State[res] = my_factory
 
