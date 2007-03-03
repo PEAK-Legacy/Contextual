@@ -48,15 +48,16 @@ Services
     instance.  Alternative implementations of a service can be defined and used
     to replace the default implementation.
 
-Configuration Settings
-    ``context.setting`` objects provide thread-safe access to stateless
-    configuration values.  Settings can have different values in different
-    contexts, but once the setting's value has been retrieved in a given
-    context it can no longer be changed.  (The idea is that once any code
-    actually *uses* a setting, it should be impossible for other code to see a
-    different value for the same setting, within the context of all code
-    "seeing" that value.  Of course, you can easily set up nested and/or
-    inheriting contexts with different setting values, if you need to.)
+Configuration Settings (Values and Expression)
+    ``context.value`` and ``context.expression`` objects provide thread-safe
+    access to stateless configuration settings.  Settings can have different
+    values in different contexts, but once the setting's value has been
+    retrieved or computed in a given context, it can no longer be changed in
+    that context.  The idea is that once any code actually *uses* a setting,
+    it should be impossible for other code to see a different value for the
+    same setting, within the context of all code that has "seen" that value.
+    (Of course, you can easily set up nested and/or inheriting contexts with
+    different values for the same settings, if you need to.)
 
 Transaction Resources
     The ``context.Action`` service manages access to objects that may need to
@@ -164,14 +165,9 @@ You can replace the current instance with another instance, by using the
 ``with:`` statement (or a special function in older versions of Python; see
 the section below on `Support for Python 2.3/2.4`_ for more info)::
 
-    >>> with Counter():     # the easy way to say it
+    >>> with Counter.new():
     ...     print count is Counter.get()    
     False
-
-    >>> c2 = Counter()  # prove that this is the instance used in the block
-    >>> with c2:
-    ...     print c2 is Counter.get()
-    True
 
     >>> count is Counter.get()  # old value is restored
     True
@@ -225,7 +221,7 @@ by twos, and can optionally increment by arbitrary amounts::
     ...     def inc_by(self, increment):
     ...         self.value += increment
 
-    >>> with ExtendedCounter():
+    >>> with ExtendedCounter.new():
     ...     print Counter.value
     ...     Counter.inc()
     ...     print Counter.value
@@ -245,7 +241,7 @@ Note, by the way, that although ``ExtendedCounter`` has added a new method, it
 is not acessible from the ``Counter`` class namespace, even if an
 ``ExtendedCounter`` is the current counter::
 
-    >>> with ExtendedCounter():
+    >>> with ExtendedCounter.new():
     ...     Counter.inc_by(42)
     Traceback (most recent call last):
       ...
@@ -255,7 +251,7 @@ To access such additional methods, you need to either get an instance of the
 service using the ``get()`` classmethod, or use the replacement class
 directly::
 
-    >>> with ExtendedCounter():
+    >>> with ExtendedCounter.new():
     ...     Counter.get().inc_by(42)
     ...     print Counter.value
     ...     ExtendedCounter.inc_by(24)
@@ -328,9 +324,11 @@ API Reference
 Service
 replaces()
 
-@setting
+@value
 @resource
-@parameter
+@expression
+
+Scope
 
 using, only, State
 

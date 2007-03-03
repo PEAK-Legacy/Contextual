@@ -5,9 +5,9 @@ from peak.util.proxies import ObjectWrapper
 from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
-    'Service', 'replaces', 'setting', 'RuleConflict', 'DynamicRuleError'
-    'State', 'Action', 'resource', 'namespace', 'parameter', 'using', 'only',
-    'lookup', 'manager', 'reraise', 'with_', 'call_with',
+    'Service', 'replaces', 'value', 'RuleConflict', 'DynamicRuleError'
+    'State', 'Action', 'resource', 'namespace', 'expression', 'using', 'only',
+    'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError'
 ]
 
 
@@ -30,17 +30,60 @@ def qname(f):
         return '%s.%s' % (m,f.__name__)
     return f.__name__
 
-
 class RuleConflict(Exception):
     """Attempt to set a rule that causes a visible conflict in the state"""
 
 class DynamicRuleError(Exception):
     """A fallback or wildcard rule attempted to access dynamic state"""
 
+class ScopeError(Exception):
+    """A problem with scoping occurred"""
+
+_exc_info = {}
+nones = None, None, None
+
+def _swap_exc_info(data):
+    this_thread = get_ident()
+    old = _exc_info.get(this_thread, nones)
+    _exc_info[this_thread] = data
+    return old
+
+
+def redirect_attribute(cls, name, payload):
+    meta = type(cls)
+    if getattr(meta, '__for_class__', None) is not cls:
+        cls.__class__ = meta = type(meta)(
+            cls.__name__+'Class', (meta,), {'__module__':cls.__module__, '__for_class__':cls}
+        )
+        # XXX activate_attrs(meta)?
+    setattr(meta, name, property(
+        lambda s: getattr(s.get(), name),
+        lambda s,v: setattr(s.get(), name, v),
+        lambda s: delattr(s.get(), name),
+    ))
+
+_ignore = {
+    '__name__':1, '__module__':1, '__return__':1, '__slots__':1, 'get':1,
+    '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1,
+}.get
+
+class ServiceClass(type):
+
+    def __new__(meta, name, bases, cdict):
+        cls = super(ServiceClass, meta).__new__(meta, name, bases, cdict)
+        if 'get' not in cdict:
+            cls.get = staticmethod(classmethod(lookup).__get__(None, cls))
+        for k, v in cdict.items():
+            if not isinstance(v, (classmethod,staticmethod))and not _ignore(k):
+                redirect_attribute(cls, k, v)
+        return cls
+
 
 
 class State(object):
     """A thread's current configuration and state"""
+
+    __metaclass__ = ServiceClass
 
     def __new__(cls, *rules, **attrs):
         return attrs and object.__new__(cls) or empty()
@@ -68,12 +111,51 @@ class State(object):
         # this method is replaced on each instance!
         raise NotImplementedError
 
+    def __enter__(self):
+        """Make this state a single-use nested state"""
+        # this method is replaced on each instance!
+        raise NotImplementedError
+
+    def __exit__(self, typ, val, tb):
+        """Close this state and invoke exit callbacks"""
+        # this method is replaced on each instance!
+        raise NotImplementedError
+
+    def on_exit(self, callback):
+        """Add a `callback(typ,val,tb)` to be invoked at ``__exit__`` time"""
+        # this method is replaced on each instance!
+        raise NotImplementedError
+
     def get(key=None):
         """Return the current state (no args) or a current rule (w/key)"""
         # this method is replaced later below
         raise NotImplementedError
 
     get = staticmethod(get)
+
+    parent = None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -93,49 +175,45 @@ class using(object):
     def apply_to(self, state):
         for key, val in self.__rules__:
             state[key] = val
-        return state.swap()
+        self._saved_state = state.__enter__()
 
     def __enter__(self):
-        self._saved_state = self.apply_to(State.get().child())
+        self.apply_to(State.child())
 
     def __exit__(self, typ, val, tb):
-        self._saved_state.swap()
+        self._saved_state.__exit__(typ, val, tb)
         del self._saved_state
-
 
 class only(using):
     def __enter__(self):
-        self._saved_state = self.apply_to(State())
+        self.apply_to(State())
 
 class _using_var(using):
     """Sets a single rule"""
     def __init__(self, key, value):
         self.__rules__ = (key, value),
+    def __enter__(self):
+        self.apply_to(State.child())
+        try: return lookup(self.__rules__[0][0])
+        except: self.__exit__(*sys.exc_info()); raise
 
-
-'''with service_inst:
-with variable(value):
-with context.using( service_inst, variable(val), other_var(other_val) ):
+'''with context.using( service_inst, variable(val), other_var(other_val) ):
 with context.only(
     service_inst, variable(val), other_var(other_val)
-):
-'''
+):'''
 
-noop = lambda rule: rule
-mngr = lambda rule: Action.manage(rule())
 
-def setting(func):
-    """Decorator to create a configuration setting from a function"""
+noop = lambda key, rule: rule
+mngr = lambda key, rule: Action.manage(rule())
+call = lambda key, rule: rule()
+
+def value(func):
+    """Decorator to create a configuration value from a function"""
     return make_var(func, State.get, noop)
 
-def parameter(func):
-    """Decorator that makes a function into a dynamic parameter"""
-    return make_var(_clonef(func, lambda: func), lookup, apply)
-
-def resource(func):
-    """Decorator to create a configuration setting from a function
-    """
-    return make_var(_clonef(func, lambda: func), lookup, mngr)
+def expression(func):
+    """Decorator to create a configuration expression from a function"""
+    return make_var(_clonef(func, lambda: func), lookup, call)
 
 
 def make_var(func, lookup, application, name=None):
@@ -162,6 +240,10 @@ def make_var(func, lookup, application, name=None):
     return impl
 
 
+
+
+
+
 def _let_there_be_state():
     """Create a world of states, manipulable only by exported functions"""
 
@@ -176,25 +258,25 @@ def _let_there_be_state():
     def lookup(key):
         """Return the value of `key` in the current state"""
         try:
-            state, getRule, lookup = states[get_ident()]
+            state, getRule, lookup, child = states[get_ident()]
         except KeyError:
             new_state().swap()
-            state, getRule, lookup = states[get_ident()]
+            state, getRule, lookup, child = states[get_ident()]
         return lookup(key)
 
     def get(key=None):
         try:
-            state, getRule, lookup = states[get_ident()]
+            state, getRule, lookup, child = states[get_ident()]
         except KeyError:
             new_state().swap()
-            state, getRule, lookup = states[get_ident()]
+            state, getRule, lookup, child = states[get_ident()]
         if key is None:
             return state
         return getRule(key)
 
     def disallow(key):
         raise DynamicRuleError(
-            "default rule tried to read dynamic state", key
+            "default rule or exit function tried to read dynamic state", key
         )
 
     def empty():
@@ -204,11 +286,13 @@ def _let_there_be_state():
 
 
     def new_state(inherit=None, inheritedDistances=None, propagate=None):
+
         buffer = {}
         rules = {}
         values = {}
         distances = {}
         computing = {}
+
         get_stack, set_stack = computing.get, computing.setdefault
 
         def getRule(key):
@@ -242,8 +326,6 @@ def _let_there_be_state():
 
             return rule
 
-
-
         def setRule(key, rule):
             """Set my rule for `key`, or raise an error if inconsistent"""
             buffer[key] = rule
@@ -265,7 +347,7 @@ def _let_there_be_state():
                 stack.append(distances[key])
 
                 try:
-                    value = key.__apply__(rule)
+                    value = key.__apply__(key, rule)
                 finally:
                     distance = stack.pop()
                     if not stack:
@@ -315,6 +397,7 @@ def _let_there_be_state():
             s.parent = this
             return s
 
+
         def __fallback(key):
             """Compute the fallback for key"""
             old = _swap(disabled)
@@ -325,46 +408,86 @@ def _let_there_be_state():
 
 
 
-
         def swap():
-            state, get, lookup = _swap(enabled)
+            if exited:
+                raise ScopeError("Can't switch to an exited state")
+            state, get, lookup, old_child = old = _swap(enabled)
             if lookup is disallow:
-                _swap((state, get, lookup))
+                _swap(old)
                 raise DynamicRuleError(
-                    "default rule tried to change states"
+                    "default rule or exit function tried to change states"   # XXX
                 )
             return state
 
-        this = State(getRule=getRule, setRule=setRule, swap=swap, child=child)
+        def __enter__():
+            if my_parent or exited:
+                raise ScopeError("Can't re-enter a previously-entered state")
+            elif active_child:
+                raise ScopeError("State already has an active child")
+            elif get() is this:
+                raise ScopeError("State is already current")
+            parent, xx, xx, parents_child = old = states[get_ident()]
+            if parents_child:
+                raise ScopeError("Current state already has an active child")
+            swap()
+            my_parent.append(old); parents_child.append(this)
+            return this
 
-        enabled  = this, getRule, getValue
-        disabled = this, getRule, disallow
+        def __exit__(typ, val, tb):
+            if exited:
+                raise ScopeError("State already exited")
+            elif not my_parent:
+                raise ScopeError("State hasn't been entered yet")
+            elif active_child:
+                raise ScopeError("Nested state(s) haven't exited yet")
+            elif get() is not this:
+                raise ScopeError("Can't exit a non-current state")
+            parents_child = my_parent[0][-1]
+            _swap(my_parent.pop()) # reactivate parent state
+            parents_child.pop()
+            exited.append(1)
+            values.clear()
+            return call_exitfuncs(typ, val, tb)
 
+        active_child = []
+        my_parent = []
+        exited = []
+
+        exit_functions = []
+
+        def call_exitfuncs(typ, val, tb):
+            old = _swap(disabled)
+            try:
+                for func in exit_functions:
+                    try:
+                        func(typ, val, tb)
+                    except:
+                        typ, val, tb = sys.exc_info()
+            finally:
+                _swap(old)
+                del typ, val, tb
+
+        def on_exit(callback):
+            if exited:
+                raise ScopeError("State already exited")
+            elif not my_parent:
+                raise ScopeError("State hasn't been entered yet")
+            if callback not in exit_functions:
+                exit_functions.append(callback)
+
+        this = State(
+            getRule=getRule, setRule=setRule, swap=swap, child=child,
+            __enter__=__enter__, __exit__=__exit__, on_exit = on_exit
+        )
+
+        enabled  = this, getRule, getValue, active_child
+        disabled = None, getRule, disallow, active_child
         return this
 
     return lookup, staticmethod(get), empty
 
-
 lookup, State.get, empty = _let_there_be_state()
 del _let_there_be_state
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class _GeneratorContextManager(object):
@@ -490,71 +613,11 @@ def call_with(ctxmgr):
 
 
 
-_exc_info = {}
-nones = None, None, None
-
-def _swap_exc_info(data):
-    this_thread = get_ident()
-    old = _exc_info.get(this_thread, nones)
-    _exc_info[this_thread] = data
-    return old
-
-
-def redirect_attribute(cls, name, payload):
-    meta = type(cls)
-    if getattr(meta, '__for_class__', None) is not cls:
-        cls.__class__ = meta = type(meta)(
-            cls.__name__+'Class', (meta,), {'__module__':cls.__module__, '__for_class__':cls}
-        )
-        # XXX activate_attrs(meta)?
-
-    setattr(meta, name, property(
-        lambda s: getattr(s.get(), name),
-        lambda s,v: setattr(s.get(), name, v),
-        lambda s: delattr(s.get(), name),
-    ))
-
-_ignore = {
-    '__name__':1, '__module__':1, '__return__':1, '__slots__':1, 'get':1,
-    '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1,
-}.get
-
-
-
-
-
-
-
-
-
-
-
-
-
-class ServiceClass(type):
-
-    def __new__(meta, name, bases, cdict):
-        cls = super(ServiceClass, meta).__new__(meta, name, bases, cdict)
-        if 'get' not in cdict:
-            cls.get = staticmethod(classmethod(lookup).__get__(None, cls))
-        for k, v in cdict.items():
-            if not isinstance(v, (classmethod,staticmethod))and not _ignore(k):
-                redirect_attribute(cls, k, v)
-        return cls
-
-
-class Service(using):
+class Service(object):
     """A replaceable, thread-local singleton"""
 
     __slots__ = ()  # pure mixin class
     __metaclass__ = ServiceClass
-
-    __rules__ = property(lambda self: ((self.get.im_self, self.getself),))
-
-    def getself(self): return self
-
-    def __init__(self):
-        pass
 
     def __default__(cls):
         return cls()
@@ -567,50 +630,110 @@ class Service(using):
 
     __fallback__ = classmethod(__fallback__)
 
-    __apply__ = staticmethod(apply)
+    __apply__ = staticmethod(call)
+
+    def new(cls, factory=None):
+        factory = factory or cls
+        # we use a lambda below to ensure that the rule is unique; that way,
+        # we are guaranteed to get a *new* instance of the service in the
+        # scope, rather than reusing the existing one.
+        return _using_var(cls.get.im_self, lambda: factory())
+
+    new = classmethod(new)
 
 
 
 
-class Action(Service):
+
+
+
+
+
+
+
+
+
+
+class Scope(Service):
+    """A scope for expressions"""
+
+    def __init__(self):
+        self.state = State.get()
+        self.cache = {}
+
+    def __compute__(cls, key, expr):
+        self = cls.get()
+        cache = self.cache
+        if cache is None:
+            raise ScopeError(self.__class__.__name__+" is already exited")
+        elif expr is not self.state[key]:
+            raise ScopeError("Redefined rule in sub-state")
+        elif key in cache:
+            return cache[key]
+        else:
+            old = self.state.swap()
+            try:
+                cache[key] = value = self.manage(expr())
+                self.state.on_exit(self.atexit)
+                return value
+            finally:
+                old.swap()
+
+    __compute__ = classmethod(__compute__)
+
+    def manage(self, ob):
+        """Do any necessary magic on 'ob' and return the new value"""
+        return ob
+
+    def expression(cls, func):
+        """Decorator to create a scoped expression"""
+        return make_var(_clonef(func, lambda: func), lookup, cls.__compute__)
+
+    expression = classmethod(expression)
+
+    def atexit(self, *exc):
+        self.cache = None
+
+
+    def __default__(cls):
+        raise RuntimeError("No %s is currently active" % (cls.__name__))
+
+    __default__ = classmethod(__default__)
+
+
+
+class Action(Scope):
     """Service for managing transaction-scoped resources"""
 
     def __init__(self):
-        self.managers = None
-        self.status = {}
-
-    def __default__(cls):
-        raise RuntimeError("No Action is currently active")
-    __default__ = classmethod(__default__)
-
-    def __enter__(self):
-        if self.managers is not None:
-            raise RuntimeError("Action is already in use")
         self.managers = []
-        return Service.__enter__(self)
+        super(Action, self).__init__()
 
-    def __exit__(self, *exc):
-        if self.managers is None:
-            raise RuntimeError("Action is not currently in use")
-
-        Service.__exit__(self, *exc)
+    def atexit(self, *exc):
+        super(Action, self).atexit(*exc)
         managers, self.managers = self.managers, None
         while managers:
             managers.pop().__exit__(*exc)  # XXX how do we handle errors?
 
     def manage(self, ob):
-        try:
-            enter = ob.__enter__
-        except AttributeError:
+        enter = getattr(ob, '__enter__', None)
+        if enter is None:
             return ob
         ctx = ob
-        ob = ctx.__enter__()
+        ob  = ctx.__enter__()
+
         # don't call __exit__ unless __enter__ succeeded
         # (if there was an error, we wouldn't have gotten this far)
         self.managers.append(ctx)
         return ob
 
-        # XXX return self.manage(key, ob)
+        # XXX return self.manage(ob)
+
+
+resource = Action.expression
+
+
+
 
 
 class namespace(ObjectWrapper):

@@ -3,7 +3,7 @@
 ==========================
 
     >>> from peak.context import State, lookup, using, only
-    >>> from peak.context import setting, parameter, namespace
+    >>> from peak.context import value, expression, namespace
 
 
 Thread testing utility::
@@ -50,13 +50,13 @@ But rules can't be changed once they've been used/read::
     RuleConflict: (1, 3, 4)
 
 
-Settings
+Values
 ========
 
-Settings can be created from functions returning default values::
+"Value" settings can be created from functions returning default values::
 
     >>> def a_setting(): return 42
-    >>> a_setting = setting(a_setting)
+    >>> a_setting = value(a_setting)
 
 If a rule isn't established for a setting in a state, its default value is
 used::
@@ -110,19 +110,215 @@ Calling a setting returns its value in the current state::
     99
 
 
-Parameters and ``lookup``
+Scoped States (using __enter__ and __exit__)
+============================================
+
+States have ``__enter__`` and ``__exit__`` methods so they can be used as
+context managers for "with" statements.  Once these methods are used, the
+state can no longer be used for any other purpose.  A strict nesting of states
+being entered or exited is also enforced; a state may have no more than one
+entered state nested underneath it.  (This nesting is dynamic and has nothing
+to do with parent/child relationships between the states.)
+
+Many possible error conditions are checked.  For example, you can't __exit__
+a state that hasn't been entered yet::
+
+    >>> s = State()
+    >>> old = State.get()
+
+    >>> s.__exit__(None, None, None)
+    Traceback (most recent call last):
+      ...
+    ScopeError: State hasn't been entered yet
+
+    >>> State.get() is old
+    True
+
+Enter an inactive state that already has a nested state under it::
+
+    >>> s.__enter__() is s
+    True
+
+    >>> s is State.get()
+    True
+
+    >>> old.__enter__()
+    Traceback (most recent call last):
+      ...
+    ScopeError: State already has an active child
+
+Re-enter a previously-entered state:::
+
+    >>> s.__enter__()
+    Traceback (most recent call last):
+      ...
+    ScopeError: Can't re-enter a previously-entered state
+
+Exit a state that still has an active nested state::
+
+    >>> sub = s.child()
+    >>> sub.__enter__() is sub
+    True
+
+    >>> s.__exit__(None, None, None)
+    Traceback (most recent call last):
+      ...
+    ScopeError: Nested state(s) haven't exited yet
+
+Or enter a state when the current state already has a nested state::
+
+    >>> s.swap() is sub
+    True
+
+    >>> sub2 = State()
+    >>> sub2.__enter__()
+    Traceback (most recent call last):
+      ...
+    ScopeError: Current state already has an active child
+
+    >>> sub.swap() is s
+    True
+
+And note that a state's contents are deleted when it's exited::
+
+    >>> def dummy(): pass
+    >>> def on_delete(wr):
+    ...     print "dummy deleted"
+    >>> import weakref
+    >>> aRef = weakref.ref(dummy, on_delete)
+    >>> dlist = [dummy]
+    >>> def aKey(): pass
+    >>> aKey = expression(aKey)
+    >>> sub[aKey] = dlist.pop
+    >>> lookup(aKey) is dummy
+    True
+    >>> dlist
+    []
+    >>> del dummy
+
+    >>> sub.__exit__(None, None, None)
+    dummy deleted
+
+You can register functions that will be called back when a state is exited,
+but not if the state has already exited::
+
+    >>> def atexit(typ, val, tb):
+    ...     print "exiting", typ, val, tb
+
+    >>> sub.on_exit(atexit)
+    Traceback (most recent call last):
+      ...
+    ScopeError: State already exited
+
+Or hasn't been entered yet::
+    
+    >>> State.get() is s
+    True
+
+    >>> sub2.on_exit(atexit)
+    Traceback (most recent call last):
+      ...
+    ScopeError: State hasn't been entered yet
+
+But once it has been entered, you can register the same function as many times
+as you like, but it's only run once  (XXX run-once guarantee isn't thread-safe
+yet)::  
+
+    >>> sub2.__enter__() is sub2
+    True
+
+    >>> sub2.on_exit(atexit)
+    >>> sub2.on_exit(atexit)    # register twice, only run once
+
+And the callback is run at exit time, passing the same values::
+
+    >>> sub2.__exit__(None, None, None)
+    exiting None None None
+
+    >>> old.swap() is s
+    True
+
+Of course, you can't exit a state that isn't the current state::
+
+    >>> s.__exit__(None, None, None)
+    Traceback (most recent call last):
+      ...
+    ScopeError: Can't exit a non-current state
+
+And exit callbacks are not allowed to perform any dynamic lookups, since the
+state has already been cleared.::
+
+    >>> s.swap() is old
+    True
+
+    >>> def try_a_lookup(typ, val, tb):
+    ...     lookup(aKey)    # this will fail, because scope is closed
+    >>> def print_error(typ, val, tb):
+    ...     import traceback
+    ...     print '-->', ''.join(traceback.format_exception(typ, val, tb)), '<--'
+
+    >>> s.on_exit(try_a_lookup)
+    >>> s.on_exit(print_error)
+
+    >>> s.__exit__(None, None, None)
+    --> Traceback (most recent call last):
+      ...
+    DynamicRuleError: ('default rule or exit function tried to read dynamic state', <function aKey...>)
+    <--
+
+But the exit operation will be succeed, anyway, no matter how many errors
+take place during the callbacks::
+
+    >>> State.get() is old
+    True
+
+And once exited, you can't exit again, of course::
+
+    >>> s.__exit__(None, None, None)
+    Traceback (most recent call last):
+      ...
+    ScopeError: State already exited
+
+Nor can you ever make that state active again, either by switching to it or
+re-entering it::
+
+    >>> s.swap()
+    Traceback (most recent call last):
+      ...
+    ScopeError: Can't switch to an exited state
+    
+    >>> State.get() is old
+    True
+
+    >>> s.__enter__()
+    Traceback (most recent call last):
+      ...
+    ScopeError: Can't re-enter a previously-entered state
+
+Nor can you enter a state that is already the current state::
+
+    >>> State.get() is old
+    True
+
+    >>> old.__enter__()
+    Traceback (most recent call last):
+      ...
+    ScopeError: State is already current
+
+
+Expressions and ``lookup``
 =========================
 
-Parameters can be created from functions returning values::
+"Expression" settings can be created from functions returning values::
 
     >>> def a_param(): return 42
-    >>> a_param = parameter(a_param)
+    >>> a_param = expression(a_param)
 
     >>> a_param()
     42
 
     >>> old = parent.child().swap()
-    >>> State.get()[a_param] = object
+    >>> State[a_param] = object
     >>> a_param()
     <object object at ...>
     >>> o1 = a_param()
@@ -152,22 +348,22 @@ Looking up non-rule values during default calculation of a rule is forbidden::
 
     >>> def s2():
     ...     return a_param()
-    >>> s2 = setting(s2)
+    >>> s2 = value(s2)
     >>> s2()
     Traceback (most recent call last):
       ...
-    DynamicRuleError: ('default rule tried to read dynamic state', ...a_param...)
+    DynamicRuleError: ('default rule or exit function tried to read dynamic state', ...a_param...)
 
 
 As is changing the active state::
 
     >>> def s3():
     ...     return parent.swap()
-    >>> s3 = setting(s3)
+    >>> s3 = value(s3)
     >>> s3()
     Traceback (most recent call last):
       ...
-    DynamicRuleError: default rule tried to change states
+    DynamicRuleError: default rule or exit function tried to change states
 
     >>> a_param()
     42
@@ -193,7 +389,7 @@ be determined to still be based on identical rules::
     >>> f1 = lambda:object()
     >>> f2 = object    # similar result, but unequal factory
 
-    >>> k1 = parameter(f1)
+    >>> k1 = expression(f1)
     >>> s3[k1] = f2
 
 Looking up k1 in s4 propagates the value to s3 and its children, because the
@@ -214,10 +410,10 @@ Instead, s2 shares its value with s1 and root::
     True
 
 A value can only be shared as high as the lowest of its (recursive)
-dependencies.  So, if we define a new parameter whose factory at the root is
-based on a lookup of the previous dynamic parameter::
+dependencies.  So, if we define a new expression whose factory at the root is
+based on a lookup of the previous dynamic expression::
 
-    >>> k2 = parameter(f1)
+    >>> k2 = expression(f1)
     >>> root[k2] = lambda: [k1()]
 
 Then its propagation scope should be the same as those of k1::
@@ -233,15 +429,15 @@ Then its propagation scope should be the same as those of k1::
 
 And a dynamic dependency on k2 should follow the same rules too::
 
-    >>> k9 = parameter(lambda: k2())
+    >>> k9 = expression(lambda: k2())
     >>> lookupIn(s3, k9) is lookupIn(s2, k9)
     False
 
 The cases shown so far only show dynamic dependency on an already-known value.
 We also need to verify dynamic dependency on an as-yet-unknown value::
 
-    >>> k3 = parameter(f1)
-    >>> k4 = parameter(f1)
+    >>> k3 = expression(f1)
+    >>> k4 = expression(f1)
     >>> s2[k3] = object
     >>> root[k4] = lambda: [k3()]
 
@@ -250,8 +446,8 @@ We also need to verify dynamic dependency on an as-yet-unknown value::
 
 And dynamic dependency on a static value::
 
-    >>> k5 = setting(lambda:42)
-    >>> k6 = parameter(f1)
+    >>> k5 = value(lambda:42)
+    >>> k6 = expression(f1)
     >>> s2[k5] = 99
     >>> root[k6] = lambda: k5()
 
@@ -304,10 +500,10 @@ whose implementation and arguments come from a different function::
     99
 
 
-Parameter Objects
+Expression Objects
 =================
 
-``@context.parameter`` is a decorator that turns a zero-argument function into
+``@context.expression`` is a decorator that turns a zero-argument function into
 a dynamic variable, whose default value in a new context is the function's
 return value when called in that context::
 
@@ -315,7 +511,7 @@ return value when called in that context::
     ...     """A Parameter"""
     ...     return 42   # default value
 
-    >>> my_param = parameter(my_param)
+    >>> my_param = expression(my_param)
 
     >>> help(my_param)
     Help on function my_param...:
@@ -326,26 +522,26 @@ return value when called in that context::
     >>> my_param()
     42
 
-Calling a parameter function with an argument returns a context manager that
-temporarily sets the parameter to that value (so you can say, e.g.,
+Calling an expression function with an argument returns a context manager that
+temporarily sets the expression to that value (so you can say, e.g.,
 ``with my_param(lambda: 99):`` and have it work)::
 
     >>> cm = my_param(lambda: 99)
-    >>> cm.__enter__()
+    >>> x = cm.__enter__()
     >>> my_param()
     99
     >>> cm.__exit__(None, None, None)
     >>> my_param()
     42
 
-It should also save the un-computed state of an as-yet-unused parameter::
+It should also save the un-computed state of an as-yet-unused expression::
 
     >>> def p2():
     ...     print "computing"
     ...     return 69
-    >>> p2 = parameter(p2)
+    >>> p2 = expression(p2)
     >>> cm = p2(lambda: 57)
-    >>> cm.__enter__()
+    >>> x = cm.__enter__()
     >>> p2()
     57
     >>> cm.__exit__(None, None, None)
@@ -371,11 +567,18 @@ Services
     >>> type(s1)
     <class 'S1'>
 
-    >>> s2 = S2()
-    >>> s2.__enter__()
+    >>> s2_ = S2.new()
+    >>> s2 = s2_.__enter__()
     >>> s2 is S1.get() is S2.get()
     True
-    >>> s2.__exit__(None,None,None)
+    >>> s3_ = S2.new()  # verify that this forces a *new* instance to be made
+    >>> s3 = s3_.__enter__()
+    >>> s3 is S1.get() is S2.get() is not s2
+    True
+    >>> s3_.__exit__(None,None,None)
+    >>> s2 is S1.get() is S2.get()
+    True
+    >>> s2_.__exit__(None,None,None)
     >>> s1 is S1.get()
     True
 
@@ -472,7 +675,7 @@ Namespaces
 ==========
 
     >>> def aSetting(): pass
-    >>> aSetting = setting(aSetting)
+    >>> aSetting = value(aSetting)
 
     >>> ns1 = namespace(aSetting)
     >>> ns1['foo']
@@ -506,7 +709,7 @@ Namespaces
     ...     print "looking up", key
     ...     return key.__name__
 
-    >>> State.get()[foo['*']] = handler
+    >>> State[foo['*']] = handler
 
     >>> foo.baz()
     looking up <function aSetting.foo.baz ...>
@@ -527,6 +730,78 @@ Namespaces
     ['bar', 'baz', 'really']
 
 
+Scopes
+======
+
+Subclasses of context.Scope can have a ``manage`` method called on their
+scoped expressions, and an ``atexit`` method that is called upon scope exit,
+as long as ``manage`` has been called without error at least once::
+
+    >>> class MyScope(context.Scope):
+    ...     def manage(self, ob):
+    ...         print "managing", ob
+    ...         return ob
+    ...     def atexit(self, typ, val, tb):
+    ...         super(MyScope, self).atexit(typ, val, tb)
+    ...         print "exiting", typ, val, tb
+
+And are not active unless explicitly created by entering their .new()::
+
+    >>> MyScope.get()
+    Traceback (most recent call last):
+      ...
+    RuntimeError: No MyScope is currently active
+
+    >>> old = State.get()
+    >>> new = MyScope.new()
+
+    >>> s = new.__enter__()
+
+The state you'll be in is a child of the original state::
+
+    >>> State.parent is old
+    True
+
+And expressions defined using the class' ``.expression`` decorator will be
+passed through the ``manage`` method::
+
+    >>> e = MyScope.expression(lambda: 23)
+    >>> e()
+    managing 23
+    23
+
+And are always calculated strictly within the state where the scope was
+created::
+
+    >>> this = State.get()
+    >>> def check_state():
+    ...     print State.get() is this
+    >>> check = MyScope.expression(check_state)
+    >>> check()
+    True
+    managing None
+
+    >>> check2 = MyScope.expression(check_state)
+    >>> context.call_with(using())(lambda x: check2())
+    True
+    managing None
+
+Which means that you can't access such an expression from a state where its
+rule has been changed, as that would create a dependency inversion::
+    
+    >>> context.call_with(check2(lambda:check_state()))(lambda x: check2())
+    Traceback (most recent call last):
+      ...
+    ScopeError: Redefined rule in sub-state
+    
+    >>> new.__exit__(None, None, None)
+    exiting None None None
+
+
+TODO: prove that manage() has to be called without an error to enable atexit()
+
+
+
 Actions
 =======
 
@@ -535,7 +810,7 @@ Actions
       ...
     RuntimeError: No Action is currently active
 
-    >>> act = context.Action()
+    >>> anew = context.Action.new()
 
     >>> class TestResource(object):
     ...     def __enter__(self):
@@ -551,14 +826,14 @@ Actions
       ...
     RuntimeError: No Action is currently active
 
-    >>> act.__enter__()
+    >>> act = anew.__enter__()
     >>> context.Action.get() is act
     True
 
-    >>> act.__enter__()
-    Traceback (most recent call last):
-      ...
-    RuntimeError: Action is already in use
+    ##>>> anew.__enter__()
+    ##Traceback (most recent call last):
+    ##  ...
+    ##RuntimeError: Action is already in use
 
     >>> r1 = res()
     Setting up
@@ -570,7 +845,7 @@ Actions
     >>> r1 is r2
     True
 
-    >>> act.__exit__(None,None,None)
+    >>> anew.__exit__(None,None,None)
     Tearing down ['None', 'None', 'None']
 
     >>> print context.Action.get()
@@ -578,15 +853,20 @@ Actions
       ...
     RuntimeError: No Action is currently active
 
-    >>> act.__exit__(None,None,None)
-    Traceback (most recent call last):
-      ...
-    RuntimeError: Action is not currently in use
+    ##>>> anew.__exit__(None,None,None)
+    ##Traceback (most recent call last):
+    ##  ...
+    ##RuntimeError: Action is not currently in use
 
-    >>> act.__enter__()
-    >>> res()
+    >>> act = anew.__enter__()
+    >>> r = res()
     Setting up
-    <TestResource object...>
+    >>> r is res()
+    True
+    >>> old = State.child().swap()
+    >>> r is res()
+    True
+    >>> old = old.swap()
 
     >>> r3 = res()
     >>> r4 = res()
@@ -595,16 +875,16 @@ Actions
     >>> r3 is r2
     False
 
-    >>> act.__exit__(TypeError,TypeError("Foo"),None)
+    >>> anew.__exit__(TypeError,TypeError("Foo"),None)
     Tearing down [...'exceptions.TypeError'..., 'Foo', 'None']
 
     >>> def my_factory():
     ...     print "Factory running"
     ...     return 42
 
-    >>> act = context.Action()
-    >>> act.__enter__()
-    >>> State.get()[res] = my_factory
+    ##>>> act = context.Action()
+    >>> act = anew.__enter__()
+    >>> State[res] = my_factory
 
     >>> res()
     Factory running
@@ -634,7 +914,7 @@ Actions
     >>> res3()
     entering
     99
-    >>> act.__exit__(None,None,None)  # no __exit__ for failed __enter__
+    >>> anew.__exit__(None,None,None)  # no __exit__ for failed __enter__
     exiting (None, None, None)
 
 

@@ -85,7 +85,7 @@ accesses ``Counter.value``, and it will automatically use the right ``Counter``
 instance for the current thread or task.  Want to use a fresh counter for
 a test?  Just do this::
 
-    with Counter():
+    with Counter.new():
         # code that uses the standard count.* API
 
 Within the ``with`` block, any code that refers to ``count`` will be using the
@@ -96,7 +96,7 @@ statement::
     >>> Counter.value     # before using a different counter
     1
 
-    >>> @context.call_with(Counter())
+    >>> @context.call_with(Counter.new())
     ... def do_it(c):
     ...     print Counter.value
     0
@@ -124,13 +124,13 @@ be plugged in to replace it?  That's simple too::
 
 To use it, just do::
 
-    with DoubleCounter():
+    with DoubleCounter.new():
         # code in this block that calls ``Counter.inc()`` will be incrementing
         # a ``DoubleCounter`` instance by 2
 
 Or, in Python 2.4, you can do something like::
 
-    >>> @context.call_with(DoubleCounter())
+    >>> @context.call_with(DoubleCounter.new())
     ... def do_it(c):
     ...     print Counter.value
     ...     Counter.inc()
@@ -152,7 +152,7 @@ so you can just have a configuration file loader set up whatever services you
 want.  You can even take a snapshot of the entire current context and restore
 all the previous values::
 
-    with context.swap():
+    with context.only():
         # code to read config file and set up services
         # code that uses the configured services
 
@@ -182,16 +182,13 @@ TODO
 * ``namespace`` would be better off not being a proxy, and should maybe accept
   type info.
 
-* Configuration files and "how to specify values" protocol -- e.g. parameter
-  should probably accept param(value) vs. param(lambda: value)
-
-* Scoped services
+* Configuration files and "how to specify values" protocol
 
 * Components w/state binding and **kw attrs update on init
 
-* Force Action __exit__ operations to occur in a purely static context (i.e.
-  no dynamic state available) to avoid re-registration, indirect access to
-  finalized resources, etc.
+* State __enter__ should lock the state to the current thread, w/o __exit__ or
+  swap() or on_exit being possible from other threads, so that they will be
+  thread-safe.
 
 * Detect value calculation cycles
 
