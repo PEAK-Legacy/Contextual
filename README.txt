@@ -178,9 +178,10 @@ TODO
 ----
 
 0.7
- * Tests for ``new()`` and ``empty()`` context managers
-
- * ``namespace`` needs testing for different namespace types
+ * ``.*`` handlers need some work to be supported properly by the configuration
+   system in the case of expressions, resources, etc.  Right now they only work
+   sanely for values, and then only for explicit registration (i.e., NOT in
+   the config file case).
 
  * << and <<= operator testing for value, expression, and namespace types
 

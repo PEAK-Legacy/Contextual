@@ -1,10 +1,10 @@
-import sys, new
+import sys
 from thread import get_ident
 from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
     'Service', 'replaces', 'value', 'RuleConflict', 'DynamicRuleError'
-    'State', 'Action', 'resource', 'expression',
+    'State', 'Action', 'resource', 'expression', 'new', 'empty'
     'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError'
 ]
 
@@ -61,7 +61,7 @@ class State(object):
 
     def swap(self):
         """Make this state current and return the old one"""
-        raise NotImplementedError   # this method is replaced on each instance
+        raise NotImplementedError("Can't switch to the root state")
 
     def child(self, *rules):
         """Return a new child state of this one, with `rules` in effect"""
@@ -69,11 +69,11 @@ class State(object):
 
     def __enter__(self):
         """Make this state a single-use nested state"""
-        raise NotImplementedError   # this method is replaced on each instance
+        raise NotImplementedError("Can't enter the root state")
 
     def __exit__(self, typ, val, tb):
         """Close this state and invoke exit callbacks"""
-        raise NotImplementedError   # this method is replaced on each instance
+        raise NotImplementedError("Can't exit the root state")
 
     def on_exit(self, callback):
         """Add a `callback(typ,val,tb)` to be invoked at ``__exit__`` time"""
@@ -110,9 +110,9 @@ def _swap_exc_info(data):
     return old
 
 
-
-
-
+def new():
+    """Return a new child of the current state"""
+    return State.child()
 
 
 
@@ -158,9 +158,9 @@ def _let_there_be_state():
 
     def empty():
         """Return a new, empty State instance"""
-        return new_state()
-
-
+        state = new_state(root_getrule)
+        state.parent = root
+        return state
 
     def new_state(inherit=None, inheritedDistances=None, propagate=None):
 
@@ -188,7 +188,7 @@ def _let_there_be_state():
                 #
                 rule = rules.setdefault(key, rule)
                 if key not in distances:
-                    if inherit and inherit(key)==rule:
+                    if inheritedDistances is not None and inherit(key)==rule:
                         distances.setdefault(key, inheritedDistances[key]+1)
                     else:
                         distances[key] = 0
@@ -329,7 +329,6 @@ def _let_there_be_state():
         active_child = []
         my_parent = []
         exited = []
-
         exit_functions = []
 
         def call_exitfuncs(typ, val, tb):
@@ -356,16 +355,17 @@ def _let_there_be_state():
             getRule=getRule, setRule=setRule, swap=swap, child=child,
             __enter__=__enter__, __exit__=__exit__, on_exit = on_exit
         )
-
         enabled  = this, getRule, getValue, active_child
         disabled = None, getRule, disallow, active_child
         return this
 
-    return lookup, staticmethod(get), empty
+    State.get = staticmethod(get)
+    State.root = root = new_state(); root.child = empty
+    root_getrule = root.getRule
+    del root.swap, root.__enter__, root.__exit__
+    return lookup, empty
 
-lookup, State.get, empty = _let_there_be_state()
-del _let_there_be_state
-
+lookup, empty = _let_there_be_state(); del _let_there_be_state
 
 class _GeneratorContextManager(object):
     """Helper for @context.manager decorator."""
@@ -757,6 +757,7 @@ class Source(object):
         return "Source(%r)" % self.filename
 
     def recode(self, code, offset=0):
+        import new
         if not isinstance(code, new.code):
             return code
         return new.code(
@@ -767,7 +768,6 @@ class Source(object):
             code.co_firstlineno+offset, code.co_lnotab, code.co_freevars,
             code.co_cellvars
         )
-
 
 
 

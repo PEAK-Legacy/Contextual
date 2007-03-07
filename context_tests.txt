@@ -35,19 +35,35 @@ Separate, ongoing states exist for each thread::
 States allow setting and getting rules for values::
 
     >>> s = State()
-    >>> s[1] = 2
-    >>> s[1] = 3
+    >>> v = value(lambda:42)
+    >>> s[v] = 2
+    >>> s[v] = 3
 
 But rules can't be changed once they've been used/read::
 
-    >>> s[1]
+    >>> s[v]
     3
 
-    >>> s[1] = 3
-    >>> s[1] = 4
+    >>> s[v] = 3
+    >>> s[v] = 4
     Traceback (most recent call last):
       ...
-    RuleConflict: (1, 3, 4)
+    RuleConflict: (<lambda>, 3, 4)
+
+``new()`` and ``empty()`` return new child and root states, respectively::
+
+    >>> context.new() is not context.new()
+    True
+    >>> context.new().parent is State.get()
+    True
+    >>> context.empty() is not context.empty()
+    True
+    >>> context.empty().parent is State.root
+    True
+    >>> isinstance(context.new(), State)
+    True
+    >>> isinstance(context.empty(), State)
+    True
 
 
 Values
@@ -305,6 +321,28 @@ Nor can you enter a state that is already the current state::
       ...
     ScopeError: State is already current
 
+There is a root state, that is the parent of every empty state::
+
+    >>> State().parent is State.root
+    True
+
+But it cannot be switched to, entered, or exited::
+
+    >>> State.root.swap()
+    Traceback (most recent call last):
+      ...
+    NotImplementedError: Can't switch to the root state
+
+    >>> State.root.__enter__()
+    Traceback (most recent call last):
+      ...
+    NotImplementedError: Can't enter the root state
+
+    >>> State.root.__exit__(None, None, None)
+    Traceback (most recent call last):
+      ...
+    NotImplementedError: Can't exit the root state
+
 
 Expressions and ``lookup``
 =========================
@@ -454,9 +492,24 @@ And dynamic dependency on a static value::
     >>> lookupIn(s3, k6) is lookupIn(s2, k6) is not lookupIn(s1, k6)
     True
 
+Finally, we need to prove that values are never propagated to the root state,
+since they would then be universal and un-removable::
 
+    >>> def k9():
+    ...     print "calculating"
+    ...     return object()
+    >>> k9 = expression(k9)
+    >>> lookupIn(root, k9)
+    calculating
+    <object object ...>
 
+    >>> lookupIn(s2, k9) is lookupIn(s1, k9)
+    calculating
+    True
 
+    >>> lookupIn(State(), k9) is lookupIn(root, k9)
+    calculating
+    False
 
 
 Expression Objects
@@ -636,7 +689,9 @@ Namespaces
 ==========
 
     >>> def aSetting(): pass
-    >>> ns1 = aSetting = value(aSetting)
+    >>> ns1 = value(aSetting)
+    >>> ns2 = expression(aSetting)
+
     >>> ns1['foo']
     aSetting.foo
 
@@ -669,8 +724,13 @@ Namespaces
     ...     return key.__name__
 
     >>> State[foo['*']] = handler
+    >>> State[ns2.foo['*']] = lambda i,k: lambda: handler(i, k)
 
     >>> foo.baz()
+    looking up aSetting.foo.baz
+    'aSetting.foo.baz'
+
+    >>> ns2.foo.baz()
     looking up aSetting.foo.baz
     'aSetting.foo.baz'
 
