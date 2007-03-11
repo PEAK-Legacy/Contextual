@@ -178,14 +178,11 @@ TODO
 ----
 
 0.7
- * ``.*`` handlers need some work to be supported properly by the configuration
-   system in the case of expressions, resources, etc.  Right now they only work
-   sanely for values, and then only for explicit registration (i.e., NOT in
-   the config file case).
-
- * << and <<= operator testing for value, expression, and namespace types
+ * ``resource_registry`` testing
 
  * Configuration files
+
+ * ``%`` and ``<<`` operators for ServiceClass (or other ways of handling them?)
 
  * Components w/state binding and **kw attrs update on init
 

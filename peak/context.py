@@ -3,9 +3,10 @@ from thread import get_ident
 from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
-    'Service', 'replaces', 'value', 'RuleConflict', 'DynamicRuleError'
-    'State', 'Action', 'resource', 'expression', 'new', 'empty'
-    'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError'
+    'Service', 'replaces', 'setting', 'RuleConflict', 'DynamicRuleError'
+    'State', 'Action', 'resource', 'registry', 'new', 'empty',
+    'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError',
+    'resource_registry',
 ]
 
 def redirect_attribute(cls, name, payload):
@@ -28,7 +29,6 @@ _ignore = {
 
 
 class ServiceClass(type):
-
     def __new__(meta, name, bases, cdict):
         cls = super(ServiceClass, meta).__new__(meta, name, bases, cdict)
         if 'get' not in cdict:
@@ -532,25 +532,25 @@ class Service(object):
 
 
 class Scope(Service):
-    """A scope for expressions"""
+    """A scope for resources"""
 
     def __init__(self):
         self.state = State.get()
         self.cache = {}
 
-    def __compute__(cls, key, expr):
+    def __compute__(cls, key, func, input):
         self = cls.get()
         cache = self.cache
         if cache is None:
             raise ScopeError(self.__class__.__name__+" is already exited")
-        elif expr is not self.state[key]:
+        elif input is not self.state[key]:
             raise ScopeError("Redefined rule in sub-state")
         elif key in cache:
             return cache[key]
         else:
             old = self.state.swap()
             try:
-                cache[key] = value = self.manage(expr())
+                cache[key] = value = self.manage(func(input))
                 self.state.on_exit(self.atexit)
                 return value
             finally:
@@ -562,21 +562,25 @@ class Scope(Service):
         """Do any necessary magic on 'ob' and return the new value"""
         return ob
 
-    def expression(cls, func):
-        """Decorator to create a scoped expression"""
-        return expression(func, cls.__compute__)
-
-    expression = classmethod(expression)
-
     def atexit(self, *exc):
         self.cache = None
 
-
     def __default__(cls):
         raise RuntimeError("No %s is currently active" % (cls.__name__))
-
     __default__ = classmethod(__default__)
 
+
+
+
+    def resource(cls, func):
+        """Decorator to create a scoped resource"""
+        return setting(func, wrap=cls.__compute__)
+    resource = classmethod(resource)
+
+    #def resource_registry(cls, func):
+    #    """Decorator to create a scoped resource registry"""
+    #    return registry(func, wrap=cls.__compute__)
+    #resource_registry = classmethod(resource_registry)
 
 
 class Action(Scope):
@@ -603,11 +607,7 @@ class Action(Scope):
         # (if there was an error, we wouldn't have gotten this far)
         self.managers.append(ctx)
         return ob
-
         # XXX return self.manage(ob)
-
-
-resource = Action.expression
 
 
 
@@ -615,115 +615,197 @@ resource = Action.expression
 
 def nop(): pass
 
-class value(object):
+class setting(object):
     """Decorator that turns a function into a contextual variable"""
 
-    # Pretend to be a function, as far as inspect/pydoc are concerned
     __class__ = type(nop)
     func_code = nop.func_code
     func_defaults = ()
 
-    def __init__(self, func):
-        self.__function__ = func
-        self.__module__   = func.__module__
-        self.__name__     = func.__name__
-        self.__doc__      = func.__doc__
-        self.__contents__ = {}
+    __argnames__ = ('value','expr'),
+
+    def __init__(self, func, wrap=None):
+        if func.func_code.co_argcount != len(self.__argnames__):
+            raise TypeError(
+                type(self).__name__+" function must have exactly %d argument(s)"
+                % len(self.__argnames__)
+            )
+        for num, (var, names) in enumerate(
+            zip(func.func_code.co_varnames, self.__argnames__)
+        ):
+            if var not in names:
+                raise TypeError(
+                    type(self).__name__+" function argument %d must be named '%s'"
+                    % (num+1, "' or '".join(names))
+                )
+        if self.__argnames__ and (not func.func_defaults or len(func.func_defaults)!=1):
+            raise TypeError(
+                type(self).__name__ +
+                " function must have a default value for last argument"
+            )
+
+        self.__function__  = func
+        self.__module__    = func.__module__
+        self.__name__      = func.__name__
+        self.__doc__       = func.__doc__
+        if wrap: self.__wrap__ = wrap
+
+    __call__ = lookup
+
+
+
+    def __apply__(self, key, input):
+        return self.__wrap__(key, self.__function__, input)
+
+    def __wrap__(self, key, func, input):
+        return func(input)
+
+    def __fallback__(self, inherit, key):
+        if inherit is None:
+            return self.__function__.func_defaults[0]
+        else:
+            return inherit(key)
+
+    def __lshift__(self, value):
+        State[self] = value
+
+    def __repr__(self):
+        if self.__module__: return self.__module__ + '.' + self.__name__
+        return self.__name__
+
+    def __mod__(self, other):
+        if self.__function__.func_code.co_varnames[
+            len(type(self).__argnames__)-1
+        ]=='expr':
+            return 'lambda: '+other
+        return other
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _with_prefix((pre, func), suffix):
+    return func(pre+suffix)
+
+def _prefixer(prefix, func):
+    return _with_prefix.__get__((prefix, func), tuple)
+
+if _prefixer(1, 2) != _prefixer(1, 2):  # 2.3 and 2.4 don't compare selves
+    class _prefixer(tuple):
+        __slots__ = []
+        def __new__(cls, prefix, func):
+            return tuple.__new__(cls, (prefix, func))
+        def __init__(cls, prefix, func):
+            pass
+        def __call__(self, suffix):
+            return self[1](self[0]+suffix)
+
+class wildcard(setting):
+    """Object used to do parent namespace rule lookups"""
+
+    def __init__(self, registry):
+        self.__module__ = registry.__module__
+        self.__name__   = registry.__name__ + '.*'
+        self.__function__ = registry.__function__
+        self.__namespace__ = registry
+
+    def __mod__(self, other):
+        return 'lambda suffix: '+other
+
+    def __apply__(self, key, input):
+        return input
+
+    def __fallback__(self, inherit, key):
+        parent = self.__namespace__
+        if parent.__namespace__:
+            func = State.get(parent.__namespace__['*'])
+            prefix = self.__name__.split('.')[-2]+'.'
+            return _prefixer(prefix, func)
+        else:
+            return parent.__function__
+
+
+class registry(setting):
+    """Decorator that turns a function into a contextual registry"""
+
+    __argnames__ = ('suffix',), ('value','expr')
+    func_code = (lambda key, default: None).func_code
+    func_defaults = (None,)
+
+    def __init__(self, func, ns=None, name='', wrap=None):
+        setting.__init__(self, func, wrap)
+        self.__name__ = name or self.__name__
+        self.__namespace__ = ns
+        self.__contents__ = {'*': wildcard(self)}
+
+    def __getitem__(self, key):
+        if '.' in key:
+            for key in key.split('.'): self = self[key]
+            return self
+        try:
+            return self.__contents__[key]
+        except KeyError:
+            s = self.__dict__[key] = self.__contents__[key] = registry(
+                self.__function__, self, self.__name__ + '.' + key,
+                #self.__dict__.get('__wrap__')
+            )
+            return s
 
     def __getattr__(self, key):
         if key.startswith('__') and key.endswith('__'):
             raise AttributeError(key)
         return self[key]
 
-    def __fallback__(self, inherit, key):
-        if inherit is None:
-            return self.__function__()
-        else:
-            return inherit(key)
-
-    def __repr__(self):
-        if self.__module__: return self.__module__ + '.' + self.__name__
-        return self.__name__
-
-    __apply__ = staticmethod(noop)
-    __call__ = State.get
-    __lookup__ = staticmethod(State.get)
-    __namespace__ = None
+    def __contains__(self,key):
+        if '.' in key:
+            for key in key.split('.'):
+                if key not in self.__contents__:
+                    return False
+                self = self[key]
+            else:
+                return True
+        return key in self.__contents__
 
     def __iter__(self):
         return iter([key for key in self.__contents__ if key!='*'])
 
+    def __call__(self, key, default=None):
+        if key not in self:
+            return default
+        return lookup(self[key])
 
-    def __getitem__(self,key):
-        if '.' in key:
-            for key in key.split('.'):
-                self = self[key]
-            return self
-        try:
-            return self.__dict__[key]
-        except KeyError:
-            # TODO: verify syntax of key: nonempty, valid chars, ...?
-            impl = type(self)(self)
-            impl.__name__ = "%s.%s" % (self.__name__, key)
+    def __apply__(self, key, input):
+        #return self.__wrap__(key, self.__function__.__get__(''), input)
+        return self.__function__('', input)
 
-            if key=='*':
-                if self.__namespace__ is not None:
-                    ns = self.__namespace__
-                    impl.__fallback__ = lambda i,k: State.get(ns['*'])
-                else:
-                    impl.__fallback__ = lambda i,k: default_fallback(self.__function__)
-            else:
-                impl.__fallback__ = lambda i,k: State.get(self['*'])(i,k)
-
-            impl.__namespace__ = self
-            self.__dict__[key] = self.__contents__[key] = impl
-            return impl
-
-    def __contains__(self,key):
-        d = self.__contents__
-        if key in d:
-            return True
-        if '.' in key:
-            for key in key.split('.'):
-                if key not in d:
-                    return False
-                d = d[key].__contents__
-            else:
-                return True
-        return False
+    def __fallback__(self, inherit, key):
+        if self.__namespace__:
+            suffix = key.__name__[len(self.__namespace__.__name__)+1:]
+            return State.get(self.__namespace__['*'])(suffix)
+        elif inherit is None:
+            suffix = key.__name__[len(self.__name__)+1:]
+            return self.__function__(suffix)
+        else:
+            return inherit(key)
 
 
+class resource(setting):
+    __wrap__ = staticmethod(Action.__compute__)
 
 
-class expression(value):
-    __slots__ = []
-
-    def __init__(self, func, apply=call):
-        value.__init__(self, func)
-        self.__function__ = lambda: func
-        self.__apply__ = apply
-
-    __call__ = lookup
-
-    def __ilshift__(self, rule):
-        State[self] = rule
-        return self
-
-
-def default_fallback(me):
-    """Fallback used for a namespace's top-level settings' wildcard results"""
-
-    def fallback(inherit, key):
-        if inherit is None:
-            return me()
-        return inherit(key)
-
-    return fallback
-
-
-
-
-
+#class resource_registry(registry):
+#    __wrap__ = staticmethod(Action.__compute__)
 
 
 

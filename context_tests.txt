@@ -2,7 +2,7 @@
 ``peak.context`` Internals
 ==========================
 
-    >>> from peak.context import State, lookup, value, expression
+    >>> from peak.context import State, lookup, setting, registry, wildcard
     >>> from peak import context
 
 
@@ -22,7 +22,7 @@ Separate, ongoing states exist for each thread::
 
     >>> State.get()
     <...State object at ...>
-    
+
     >>> State.get() is State.get()
     True
 
@@ -35,7 +35,7 @@ Separate, ongoing states exist for each thread::
 States allow setting and getting rules for values::
 
     >>> s = State()
-    >>> v = value(lambda:42)
+    >>> v = setting(lambda value=42: value)
     >>> s[v] = 2
     >>> s[v] = 3
 
@@ -66,13 +66,13 @@ But rules can't be changed once they've been used/read::
     True
 
 
-Values
-======
+Settings
+========
 
 "Value" settings can be created from functions returning default values::
 
-    >>> def a_setting(): return 42
-    >>> a_setting = value(a_setting)
+    >>> def a_setting(value=42): return value
+    >>> a_setting = setting(a_setting)
 
 If a rule isn't established for a setting in a state, its default value is
 used::
@@ -203,8 +203,8 @@ And note that a state's contents are deleted when it's exited::
     >>> import weakref
     >>> aRef = weakref.ref(dummy, on_delete)
     >>> dlist = [dummy]
-    >>> def aKey(): pass
-    >>> aKey = expression(aKey)
+    >>> def aKey(expr=lambda:None): return expr()
+    >>> aKey = setting(aKey)
     >>> sub[aKey] = dlist.pop
     >>> lookup(aKey) is dummy
     True
@@ -227,7 +227,7 @@ but not if the state has already exited::
     ScopeError: State already exited
 
 Or hasn't been entered yet::
-    
+
     >>> State.get() is s
     True
 
@@ -238,7 +238,7 @@ Or hasn't been entered yet::
 
 But once it has been entered, you can register the same function as many times
 as you like, but it's only run once  (XXX run-once guarantee isn't thread-safe
-yet)::  
+yet)::
 
     >>> sub2.__enter__() is sub2
     True
@@ -302,7 +302,7 @@ re-entering it::
     Traceback (most recent call last):
       ...
     ScopeError: Can't switch to an exited state
-    
+
     >>> State.get() is old
     True
 
@@ -349,8 +349,8 @@ Expressions and ``lookup``
 
 "Expression" settings can be created from functions returning values::
 
-    >>> def a_param(): return 42
-    >>> a_param = expression(a_param)
+    >>> def a_param(expr=lambda:42): return expr()
+    >>> a_param = setting(a_param)
 
     >>> a_param()
     42
@@ -384,10 +384,10 @@ Rule Purity
 
 Looking up non-rule values during default calculation of a rule is forbidden::
 
-    >>> def s2():
+    >>> def s2(suffix, value=None):
     ...     return a_param()
-    >>> s2 = value(s2)
-    >>> s2()
+    >>> s2 = registry(s2)
+    >>> lookup(s2)
     Traceback (most recent call last):
       ...
     DynamicRuleError: ('default rule or exit function tried to read dynamic state', ...a_param...)
@@ -395,10 +395,10 @@ Looking up non-rule values during default calculation of a rule is forbidden::
 
 As is changing the active state::
 
-    >>> def s3():
+    >>> def s3(suffix, value=None):
     ...     return parent.swap()
-    >>> s3 = value(s3)
-    >>> s3()
+    >>> s3 = registry(s3)
+    >>> lookup(s3)
     Traceback (most recent call last):
       ...
     DynamicRuleError: default rule or exit function tried to change states
@@ -424,10 +424,10 @@ be determined to still be based on identical rules::
     ...     try: return lookup(key)
     ...     finally: old.swap()
 
-    >>> f1 = lambda:object()
+    >>> f1 = lambda expr=None:object()
     >>> f2 = object    # similar result, but unequal factory
 
-    >>> k1 = expression(f1)
+    >>> k1 = setting(f1)
     >>> s3[k1] = f2
 
 Looking up k1 in s4 propagates the value to s3 and its children, because the
@@ -451,7 +451,8 @@ A value can only be shared as high as the lowest of its (recursive)
 dependencies.  So, if we define a new expression whose factory at the root is
 based on a lookup of the previous dynamic expression::
 
-    >>> k2 = expression(f1)
+    >>> f2 = lambda expr=object: expr()
+    >>> k2 = setting(f2)
     >>> root[k2] = lambda: [k1()]
 
 Then its propagation scope should be the same as those of k1::
@@ -467,16 +468,16 @@ Then its propagation scope should be the same as those of k1::
 
 And a dynamic dependency on k2 should follow the same rules too::
 
-    >>> k9 = expression(lambda: k2())
+    >>> k9 = setting(lambda expr=None: k2())
     >>> lookupIn(s3, k9) is lookupIn(s2, k9)
     False
 
 The cases shown so far only show dynamic dependency on an already-known value.
 We also need to verify dynamic dependency on an as-yet-unknown value::
 
-    >>> k3 = expression(f1)
-    >>> k4 = expression(f1)
-    >>> s2[k3] = object
+    >>> k3 = setting(f2)
+    >>> k4 = setting(f2)
+    >>> s2[k3] = lambda: object()
     >>> root[k4] = lambda: [k3()]
 
     >>> lookupIn(s3, k4) is lookupIn(s2, k4) is not lookupIn(s1, k4)
@@ -484,8 +485,8 @@ We also need to verify dynamic dependency on an as-yet-unknown value::
 
 And dynamic dependency on a static value::
 
-    >>> k5 = value(lambda:42)
-    >>> k6 = expression(f1)
+    >>> k5 = setting(lambda value=42: value)
+    >>> k6 = setting(f2)
     >>> s2[k5] = 99
     >>> root[k6] = lambda: k5()
 
@@ -495,10 +496,10 @@ And dynamic dependency on a static value::
 Finally, we need to prove that values are never propagated to the root state,
 since they would then be universal and un-removable::
 
-    >>> def k9():
+    >>> def k9(expr=object):
     ...     print "calculating"
-    ...     return object()
-    >>> k9 = expression(k9)
+    ...     return expr()
+    >>> k9 = setting(k9)
     >>> lookupIn(root, k9)
     calculating
     <object object ...>
@@ -510,60 +511,6 @@ since they would then be universal and un-removable::
     >>> lookupIn(State(), k9) is lookupIn(root, k9)
     calculating
     False
-
-
-Expression Objects
-==================
-
-``@context.expression`` is a decorator that turns a zero-argument function into
-a dynamic variable, whose default value in a new context is the function's
-return value when called in that context::
-
-    >>> def my_param():
-    ...     """A Parameter"""
-    ...     return 42   # default value
-
-    >>> my_param = expression(my_param)
-
-    >>> help(my_param)
-    Help on function my_param...:
-    <BLANKLINE>
-    my_param()
-        A Parameter...
-
-    >>> my_param()
-    42
-
-Using the ``<<=`` operator on an expression changes the rule for that
-expression, within the current state::
-
-    >>> s = State()
-    >>> s is s.__enter__()
-    True
-    >>> my_param <<= lambda:99
-    >>> my_param()
-    99
-    >>> s.__exit__(None, None, None)
-    >>> my_param()
-    42
-
-It should not affect the un-computed state of the expression in a context
-where the rule is different::
-
-    >>> def p2():
-    ...     print "computing"
-    ...     return 69
-    >>> p2 = expression(p2)
-    >>> s = State()
-    >>> s is s.__enter__()
-    True
-    >>> p2 <<= lambda: 57
-    >>> p2()
-    57
-    >>> s.__exit__(None, None, None)
-    >>> p2()
-    computing
-    69
 
 
 
@@ -653,7 +600,7 @@ the singleton-izing magic, for both instance and class methods::
 
     >>> Base.get() is Sub.get()
     False
-    
+
     >>> Sub.test()
     hello from sub
     hello from Base
@@ -683,73 +630,293 @@ Service attributes should be settable and deletable, mapped to the instance::
     >>> Dummy.get().foo
     42
 
-    
 
-Namespaces
+
+
+Settings
+========
+
+Settings must be defined with one parameter::
+
+    >>> def val(value=42):
+    ...     """some docstring"""
+    ...     return value * 2
+
+    >>> val = setting(val)
+
+    >>> help(val)
+    Help on function val...:
+    <BLANKLINE>
+    val()
+        some docstring
+    <BLANKLINE>
+
+which must be named ``expr`` or ``value``::
+
+    >>> setting(lambda:42)
+    Traceback (most recent call last):
+      ...
+    TypeError: setting function must have exactly 1 argument(s)
+
+    >>> setting(lambda x,y: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: setting function must have exactly 1 argument(s)
+
+    >>> setting(lambda x: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: setting function argument 1 must be named 'value' or 'expr'
+
+and have a default value::
+
+    >>> setting(lambda value: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: setting function must have a default value for last argument
+
+
+A setting's "input value" is set by State.__setitem__, and is readable with
+State.__getitem__::
+
+    >>> s = State()
+    >>> s[val] = 99
+    >>> s[val]
+    99
+
+And its default input value in the root state is the function's default value::
+
+    >>> State.root[val]
+    42
+
+Calling a setting returns its output value in the current state (which is
+determined by calling the original function on the input value)::
+
+    >>> val()
+    84
+
+
+A setting's input value in the current state can be set using ``<<``::
+
+    >>> old = State().swap()
+
+    >>> val << 99
+    >>> val << 22
+    >>> val << 77
+    >>> State[val]
+    77
+
+    >>> val()
+    154
+
+    >>> val << 77
+    >>> val << 22
+    Traceback (most recent call last):
+      ...
+    RuleConflict: (val, 77, 22)
+
+    >>> s = old.swap()
+
+
+A setting can turn a configuration string into a value suitable for its own
+use, using the ``%`` operator.  If a setting's parameter is ``expr``,
+configuration strings and values are treated as zero-argument callables, to be
+invoked by the setting's body::
+
+    >>> setting(lambda expr=None: expr()) % "42"
+    'lambda: 42'
+
+If a setting's parameter is ``value``, configuration strings and values are
+used directly::
+
+    >>> val % "42"
+    '42'
+
+
+Registries
 ==========
 
-    >>> def aSetting(): pass
-    >>> ns1 = value(aSetting)
-    >>> ns2 = expression(aSetting)
+Registries must be defined with two parameters: ``suffix`` and either ``value``
+or ``expr``::
 
-    >>> ns1['foo']
-    aSetting.foo
+    >>> registry(lambda x: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: registry function must have exactly 2 argument(s)
 
-    >>> foo = ns1['foo']
-    >>> foo is ns1['foo']
+    >>> registry(lambda x, y: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: registry function argument 1 must be named 'suffix'
+
+    >>> registry(lambda suffix, y: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: registry function argument 2 must be named 'value' or 'expr'
+
+    >>> registry(lambda suffix, expr: 42)
+    Traceback (most recent call last):
+      ...
+    TypeError: registry function must have a default value for last argument
+
+
+    >>> def dummy(suffix, value=42):
+    ...     """another docstring"""
+    ...     if suffix:
+    ...         print "looking up", suffix
+    ...         return suffix
+    ...     return value
+
+    >>> dummy = registry(dummy)
+
+Registry objects format strings according to their second argument, much like
+settings::
+
+    >>> dummy % "xyz"
+    'xyz'
+
+    >>> registry(lambda suffix, expr=99: 27) % "xyz"
+    'lambda: xyz'
+
+
+Registries can have lookups done on them to retrieve sub-registries by name::
+
+    >>> dummy['foo']
+    dummy.foo
+
+And these sub-registries are cached::
+
+    >>> foo = dummy['foo']
+    >>> foo is dummy['foo']
     True
 
-    >>> foo.bar
-    aSetting.foo.bar
-    >>> foo.bar is foo['bar']
+And are also available as attributes::
+
+    >>> foo is dummy.foo
     True
 
-    >>> 'spam' in foo
-    False
-
-    >>> 'bar' in foo
+    >>> foo.bar is dummy.foo['bar']
     True
+
+You can iterate over a registry's keys, and test for membership::
 
     >>> list(foo)
     ['bar']
 
-    >>> foo.bar.spam is foo['bar.spam']
+    >>> 'bar' in foo
     True
 
-    >>> 'bar.spam' in foo
+    >>> 'baz' in foo
+    False
+
+Dotted names are treated as though they were nested access::
+
+    >>> dummy['foo.bar'] is foo.bar
     True
 
-    >>> def handler(inherit, key):
-    ...     print "looking up", key
-    ...     return key.__name__
+    >>> 'foo.bar' in dummy
+    True
 
-    >>> State[foo['*']] = handler
-    >>> State[ns2.foo['*']] = lambda i,k: lambda: handler(i, k)
 
-    >>> foo.baz()
-    looking up aSetting.foo.baz
-    'aSetting.foo.baz'
+Wildcards
+=========
 
-    >>> ns2.foo.baz()
-    looking up aSetting.foo.baz
-    'aSetting.foo.baz'
+Wildcards are special objects used with registries::
 
-    >>> foo.bar.bang()  # 2nd level rule lookup
-    looking up aSetting.foo.bar.bang
-    'aSetting.foo.bar.bang'
+    >>> wildcard(dummy)
+    dummy.*
 
-    >>> print ns1.whee()  # aSetting returns nothing, so so does this
-    None
+    >>> type(dummy['*'])
+    <class 'peak.context.wildcard'>
 
-    >>> foo['really.really.long.name.needing.multiple.rules']()
-    looking up aSetting.foo.really.really.long.name.needing.multiple.rules
-    'aSetting.foo.really.really.long.name.needing.multiple.rules'
+Wildcards are effectively settings that prefix config strings with
+``lambda suffix:``::
+
+    >>> wildcard(dummy) % "blah"
+    'lambda suffix: blah'
+
+and don't transform their input values::
+
+    >>> wildcard(dummy).__apply__(dummy, 99)
+    99
+
+When a non-root registry's fallback is called, it looks up its parent
+registry's wildcard input, and calls it to compute the input for that key::
+
+    >>> def trace(suffix):
+    ...     print "tracing", `suffix`
+
+    >>> foo['*'] << trace
+
+    >>> foo.bar.__fallback__(None, foo.bar)
+    tracing 'bar'
+
+And when a wildcard's fallback is called, it *returns* its parent registry's
+wildcard's input, without calling it::
+
+    >>> foo.bar['*'].__fallback__(None, foo.bar.baz)('x')
+    tracing 'bar.x'
+
+    >>> star = foo.bar['*'].__fallback__
+
+    >>> star(None, foo.bar.baz) == star(None, foo.bar.baz)
+    True
+
+    >>> foo.bar.baz.__fallback__(None, foo.bar.baz)
+    tracing 'bar.baz'
+
+
+When attached to a root registry and invoked in a root context, their fallback
+is to call the registry's default handler::
+
+    >>> dummy['*'].__fallback__(None, foo)('x')
+    looking up x
+    'x'
+
+    >>> dummy.__fallback__(None, foo.bar)
+    looking up foo.bar
+    'foo.bar'
+
+When attached to a non-root registry, their fallback is to look up their parent
+wildcard
+
+    >>> foo['*'].__fallback__(None, foo.bar)('x')
+    looking up foo.x
+    'foo.x'
+
+Registries can be called, passing in a string key and optionally a default
+value to return in case the key isn't found::
+
+    >>> help(dummy)
+    Help on function dummy...:
+    <BLANKLINE>
+    dummy(key, default=None)
+        another docstring
+    <BLANKLINE>
+
+    >>> dummy('xyz.abc', 88)
+    88
+
+    >>> dummy('foo')
+    looking up foo
+    looking up foo
+    'foo'
+
+    >>> foo.spam << 91
+    >>> dummy('foo.spam')
+    looking up foo.spam
+    91
+    
+    >>> lookup(dummy)
+    42
+
+    >>> lookup(foo['really.really.long.name.needing.multiple.rules'])
+    tracing 'really.really.long.name.needing.multiple.rules'
+    looking up foo.really.really.long.name.needing.multiple.rules
 
     >>> sorted(foo)
-    ['bar', 'baz', 'really']
+    ['bar', 'really', 'spam']
 
-
-XXX namespaces wrapping expressions, resources, etc.
 
 Scopes
 ======
@@ -786,7 +953,7 @@ The state you'll be in is a child of the original state::
 And expressions defined using the class' ``.expression`` decorator will be
 passed through the ``manage`` method::
 
-    >>> e = MyScope.expression(lambda: 23)
+    >>> e = MyScope.resource(lambda value=23: value)
     >>> e()
     managing 23
     23
@@ -795,14 +962,14 @@ And are always calculated strictly within the state where the scope was
 created::
 
     >>> this = State.get()
-    >>> def check_state():
+    >>> def check_state(value=None):
     ...     print State.get() is this
-    >>> check = MyScope.expression(check_state)
+    >>> check = MyScope.resource(check_state)
     >>> check()
     True
     managing None
 
-    >>> check2 = MyScope.expression(check_state)
+    >>> check2 = MyScope.resource(check_state)
     >>> context.call_with(State.child())(lambda x: check2())
     True
     managing None
@@ -814,7 +981,7 @@ rule has been changed, as that would create a dependency inversion::
     >>> s is s.__enter__()
     True
 
-    >>> check2 <<= lambda:check_state()
+    >>> check2 << (lambda:check_state())
     >>> check2()
     Traceback (most recent call last):
       ...
@@ -826,6 +993,65 @@ rule has been changed, as that would create a dependency inversion::
 
 TODO: prove that manage() has to be called without an error to enable atexit()
 
+
+Scoped Settings
+===============
+
+Scope's management wraps the application of a setting's function body::
+
+    >>> def res(value=42):
+    ...     print "initializing"
+    ...     return value
+
+    >>> res = context.Scope.resource(res)
+
+    >>> s = context.Scope().new()
+    >>> ss = s.__enter__()
+
+    >>> res()
+    initializing
+    42
+    >>> res()
+    42
+
+    >>> s.__exit__(None, None, None)
+
+
+Resources
+=========
+
+``@context.resource`` is a decorator that turns a zero-argument function into
+a dynamic variable, whose default value in a new context is the function's
+return value when called within the relevant scope (``Action`` by default)::
+
+    >>> def my_res(value=42):
+    ...     """A resource"""
+    ...     return value   # default value
+
+    >>> my_res = context.resource(my_res)
+
+    >>> help(my_res)
+    Help on function my_res...:
+    <BLANKLINE>
+    my_res()
+        A resource
+    <BLANKLINE>
+
+    >>> my_res()
+    Traceback (most recent call last):
+      ...
+    RuntimeError: No Action is currently active
+
+    >>> a = context.Action.new()
+    >>> aa = a.__enter__()
+
+    >>> my_res()
+    42
+
+    >>> a.__exit__(None, None, None)
+
+
+XXX resource_registry tests
 
 
 Actions
@@ -845,7 +1071,7 @@ Actions
     ...     def __exit__(self, typ, val, tb):
     ...         print "Tearing down", map(str,(typ,val,tb))
 
-    >>> res = context.resource(lambda: TestResource())
+    >>> res = context.resource(lambda expr=TestResource: expr())
 
     >>> res()
     Traceback (most recent call last):
@@ -914,7 +1140,7 @@ Actions
     ...     def __exit__(self,*exc):
     ...         raise AssertionError("This shouldn't get called!")
 
-    >>> res2 = context.resource(lambda: Failure())
+    >>> res2 = context.resource(lambda expr=Failure: expr())
     >>> res2()
     Traceback (most recent call last):
       ...
@@ -922,12 +1148,12 @@ Actions
 
     >>> class Success(object):
     ...     def __enter__(self):
-    ...         print "entering"    
+    ...         print "entering"
     ...         return 99
     ...     def __exit__(self, *exc):
     ...         print "exiting", exc
 
-    >>> res3 = context.resource(lambda: Success())
+    >>> res3 = context.resource(lambda expr=Success: expr())
     >>> res3()
     entering
     99
@@ -939,7 +1165,7 @@ Source Lines
 ============
 
     >>> from peak.context import Source, Line
-    
+
     >>> s = Source("<test>", "def foo():\n  def bar(): return 42\n  return bar")
     >>> s
     Source('<test>')
@@ -960,7 +1186,7 @@ Source Lines
 
     >>> (s[1]+'\n').splitlines()[1].line
     3
-    
+
     >>> exec(s[1].strip().compile('exec'))
     >>> bar.func_code.co_firstlineno
     2
