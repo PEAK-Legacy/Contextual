@@ -3,7 +3,7 @@ from thread import get_ident
 from peak.util.decorators import rewrap, cache_source
 
 __all__ = [
-    'Service', 'replaces', 'setting', 'RuleConflict', 'DynamicRuleError'
+    'Service', 'replaces', 'setting', 'InputConflict', 'DynamicRuleError'
     'State', 'Action', 'resource', 'registry', 'new', 'empty',
     'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError',
     'resource_registry',
@@ -22,13 +22,39 @@ def redirect_attribute(cls, name, payload):
         lambda s: delattr(s.get(), name),
     ))
 
-_ignore = {
-    '__name__':1, '__module__':1, '__return__':1, '__slots__':1, 'get':1,
-    '__init__':1, '__metaclass__':1, '__doc__':1, '__call__': 1, '__new__':1,
-}.get
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+_in_place = """__iadd__ __isub__ __imul__ __idiv__ __itruediv__ __ifloordiv__
+__imod__ __ipow__ __ilshift__ __irshift__ __iand__ __ixor__ __ior__""".split()
+
+_ignore = dict.fromkeys("""
+    __name__ __module__ __return__ __slots__ get __init__ __metaclass__ __doc__
+    __call__ __new__""".split() + _in_place
+).__contains__
+
+def _no_in_place(self, *args):
+    raise TypeError(
+        "In-place operators (other than <<=) cannot be performed on a"
+        " service class"
+    )
 
 class ServiceClass(type):
+
     def __new__(meta, name, bases, cdict):
         cls = super(ServiceClass, meta).__new__(meta, name, bases, cdict)
         if 'get' not in cdict:
@@ -37,6 +63,21 @@ class ServiceClass(type):
             if not isinstance(v, (classmethod,staticmethod))and not _ignore(k):
                 redirect_attribute(cls, k, v)
         return cls
+
+    for name in _in_place:
+        locals()[name] = _no_in_place
+        
+    def __ilshift__(cls, factory):
+        State[cls] = factory
+        return cls
+
+    def __mod__(cls, expr):
+        return 'lambda: '+expr
+
+
+
+
+
 
 
 class State(object):
@@ -90,7 +131,7 @@ class State(object):
     parent = None
 
 
-class RuleConflict(Exception):
+class InputConflict(Exception):
     """Attempt to set a rule that causes a visible conflict in the state"""
 
 class DynamicRuleError(Exception):
@@ -209,7 +250,7 @@ def _let_there_be_state():
             # as long as a snapshot hasn't been taken yet, `old` will be `rule`
             old = rules.get(key, rule)
             if old is not rule and old != rule:
-                raise RuleConflict(key, old, rule)
+                raise InputConflict(key, old, rule)
 
         def getValue(key):
             """Get the dynamic value of `key`"""
@@ -577,10 +618,10 @@ class Scope(Service):
         return setting(func, wrap=cls.__compute__)
     resource = classmethod(resource)
 
-    #def resource_registry(cls, func):
-    #    """Decorator to create a scoped resource registry"""
-    #    return registry(func, wrap=cls.__compute__)
-    #resource_registry = classmethod(resource_registry)
+    def resource_registry(cls, func):
+        """Decorator to create a scoped resource registry"""
+        return registry(func, wrap=cls.__compute__)
+    resource_registry = classmethod(resource_registry)
 
 
 class Action(Scope):
@@ -609,8 +650,8 @@ class Action(Scope):
         return ob
         # XXX return self.manage(ob)
 
-
-
+resource = Action.resource
+resource_registry = Action.resource_registry
 
 
 def nop(): pass
@@ -666,8 +707,9 @@ class setting(object):
         else:
             return inherit(key)
 
-    def __lshift__(self, value):
+    def __ilshift__(self, value):
         State[self] = value
+        return self
 
     def __repr__(self):
         if self.__module__: return self.__module__ + '.' + self.__name__
@@ -679,7 +721,6 @@ class setting(object):
         ]=='expr':
             return 'lambda: '+other
         return other
-
 
 
 
@@ -758,7 +799,7 @@ class registry(setting):
         except KeyError:
             s = self.__dict__[key] = self.__contents__[key] = registry(
                 self.__function__, self, self.__name__ + '.' + key,
-                #self.__dict__.get('__wrap__')
+                self.__dict__.get('__wrap__')
             )
             return s
 
@@ -786,8 +827,7 @@ class registry(setting):
         return lookup(self[key])
 
     def __apply__(self, key, input):
-        #return self.__wrap__(key, self.__function__.__get__(''), input)
-        return self.__function__('', input)
+        return self.__wrap__(key, self.__function__.__get__(''), input)
 
     def __fallback__(self, inherit, key):
         if self.__namespace__:
@@ -799,14 +839,15 @@ class registry(setting):
         else:
             return inherit(key)
 
+    def __setitem__(self, key, value):
+        if value is not self[key]:
+            raise TypeError("Registries are read-only")
 
-class resource(setting):
-    __wrap__ = staticmethod(Action.__compute__)
-
-
-#class resource_registry(registry):
-#    __wrap__ = staticmethod(Action.__compute__)
-
+    def __setattr__(self, key, value):
+        if key.startswith('__') and key.endswith('__'):
+            return object.__setattr__(self, key, value)
+        else:
+            self[key] = value
 
 
 

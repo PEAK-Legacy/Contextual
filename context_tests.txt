@@ -48,7 +48,7 @@ But rules can't be changed once they've been used/read::
     >>> s[v] = 4
     Traceback (most recent call last):
       ...
-    RuleConflict: (<lambda>, 3, 4)
+    InputConflict: (<lambda>, 3, 4)
 
 ``new()`` and ``empty()`` return new child and root states, respectively::
 
@@ -86,7 +86,7 @@ And of course it can't be changed except to the same value afterward::
     >>> s[a_setting] = 43
     Traceback (most recent call last):
       ...
-    RuleConflict: (...a_setting..., 42, 43)
+    InputConflict: (...a_setting..., 42, 43)
 
 
 Child States and Setting Inheritance
@@ -696,24 +696,42 @@ determined by calling the original function on the input value)::
     84
 
 
-A setting's input value in the current state can be set using ``<<``::
+Configuration Support
+=====================
+
+A setting's input value in the current state can be set using ``<<=``::
 
     >>> old = State().swap()
 
-    >>> val << 99
-    >>> val << 22
-    >>> val << 77
+    >>> val <<= 99
+    >>> val <<= 22
+    >>> val <<= 77
     >>> State[val]
     77
 
     >>> val()
     154
 
-    >>> val << 77
-    >>> val << 22
+    >>> val <<= 77
+    >>> val <<= 22
     Traceback (most recent call last):
       ...
-    RuleConflict: (val, 77, 22)
+    InputConflict: (val, 77, 22)
+
+Likewise for services::
+
+    >>> d1 = Dummy()
+    >>> d2 = Dummy()
+    >>> Dummy <<= lambda: d1
+    >>> Dummy <<= lambda: d2
+    >>> Dummy.get() is d2
+    True
+    >>> Dummy <<= lambda: d1
+    Traceback (most recent call last):
+      ...
+    InputConflict: (<class 'Dummy'>, <...<lambda>...>, <...<lambda>...>)
+
+Done with test::
 
     >>> s = old.swap()
 
@@ -731,6 +749,11 @@ used directly::
 
     >>> val % "42"
     '42'
+
+For services, configuration strings are always treated as expressions::
+
+    >>> Dummy % "42"
+    'lambda: 42'
 
 
 Registries
@@ -790,6 +813,16 @@ And these sub-registries are cached::
     >>> foo is dummy['foo']
     True
 
+...but immutable::
+
+    >>> dummy['foo'] = foo  # same value, ok
+    
+    >>> dummy['foo'] = 99   # different value, not ok!
+    Traceback (most recent call last):
+      ...
+    TypeError: Registries are read-only
+
+
 And are also available as attributes::
 
     >>> foo is dummy.foo
@@ -798,6 +831,13 @@ And are also available as attributes::
     >>> foo.bar is dummy.foo['bar']
     True
 
+    >>> dummy.foo = foo     # same value, ok
+    >>> dummy.foo = 99   # different value, not ok!
+    Traceback (most recent call last):
+      ...
+    TypeError: Registries are read-only
+
+    
 You can iterate over a registry's keys, and test for membership::
 
     >>> list(foo)
@@ -846,7 +886,7 @@ registry's wildcard input, and calls it to compute the input for that key::
     >>> def trace(suffix):
     ...     print "tracing", `suffix`
 
-    >>> foo['*'] << trace
+    >>> foo['*'] <<= trace
 
     >>> foo.bar.__fallback__(None, foo.bar)
     tracing 'bar'
@@ -902,11 +942,11 @@ value to return in case the key isn't found::
     looking up foo
     'foo'
 
-    >>> foo.spam << 91
+    >>> foo.spam <<= 91
     >>> dummy('foo.spam')
     looking up foo.spam
     91
-    
+
     >>> lookup(dummy)
     42
 
@@ -950,13 +990,25 @@ The state you'll be in is a child of the original state::
     >>> State.parent is old
     True
 
-And expressions defined using the class' ``.expression`` decorator will be
-passed through the ``manage`` method::
+And settings defined using the class' ``.resource`` and ``.resource_registry``
+decorators will be passed through the ``manage`` method::
 
     >>> e = MyScope.resource(lambda value=23: value)
     >>> e()
     managing 23
     23
+
+    >>> def e2(suffix, value=23):
+    ...     if suffix:
+    ...         return suffix
+    ...     return value
+    >>> e2 = MyScope.resource_registry(e2)
+    >>> lookup(e2)
+    managing 23
+    23
+    >>> lookup(e2.foo)
+    managing foo
+    'foo'
 
 And are always calculated strictly within the state where the scope was
 created::
@@ -981,7 +1033,7 @@ rule has been changed, as that would create a dependency inversion::
     >>> s is s.__enter__()
     True
 
-    >>> check2 << (lambda:check_state())
+    >>> check2 <<= lambda:check_state()
     >>> check2()
     Traceback (most recent call last):
       ...
@@ -1049,9 +1101,6 @@ return value when called within the relevant scope (``Action`` by default)::
     42
 
     >>> a.__exit__(None, None, None)
-
-
-XXX resource_registry tests
 
 
 Actions

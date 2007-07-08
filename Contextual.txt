@@ -28,100 +28,151 @@ to import the ``Contextual`` library too:
     >>> from peak import context
 
 
-Overview and Features
-=====================
+Overview
+========
 
-The basic idea of the ``Contextual`` library is that it allows you to have
-"current" instances or values, that are specific to the current call stack in
-the current thread.  These "current" values can be temporarily changed
-using either a Python 2.5 ``with:`` statement, or, if backward compatibility is
-desired, a special decorator that simulates the ``with:`` statement in older
-versions of Python.
+Global variables (including so-called "singletons") are attractive to use,
+because they're so *convenient* to use.  But they're bug-prone for two reasons:
 
-There are three major kinds of "current" values that ``Contextual`` supports:
+1. They're global (i.e., shared by the entire program), and
 
-Services
-    Services are like singletons, but have a separate instance for each thread
-    and can easily be replaced as needed for e.g. testing or co-operative
-    multitasking.  Services are created by subclassing ``context.Service``, and
-    the resulting class's ``get()`` classmethod will return the current
-    instance.  Alternative implementations of a service can be defined and used
-    to replace the default implementation.
+2. They're variable (i.e., can be changed at any time)!
 
-Configuration Settings (Values and Expression)
-    ``context.value`` and ``context.expression`` objects provide thread-safe
-    access to stateless configuration settings.  Settings can have different
-    values in different contexts, but once the setting's value has been
-    retrieved or computed in a given context, it can no longer be changed in
-    that context.  The idea is that once any code actually *uses* a setting,
-    it should be impossible for other code to see a different value for the
-    same setting, within the context of all code that has "seen" that value.
-    (Of course, you can easily set up nested and/or inheriting contexts with
-    different values for the same settings, if you need to.)
+The ``Contextual`` library lets you replace "global variables" with "contextual
+values" (and "singletons" with "services").  These tools are almost as easy to
+use as their "global" counterparts, but are less bug-prone becuase they're
+neither "global" nor "variable"!
 
-Transaction Resources
-    The ``context.Action`` service manages access to objects that may need to
-    be recycled, saved, or reverted at the completion of an action such as
-    a transaction, command, web request, or other atomic operation.  Requesting
-    a resource (such as a database connection) from the action service causes
-    it to be registered with the current ``Action``, so that it will be
-    notified of the success or failure of the action.  This then allows the
-    resource to commit or rollback as appropriate, return connections to
-    connection pools or close them, etc.
+First, while global variables and singletons are stored in modules, contextual
+values and services are stored in a "context".  By default, each thread has its
+own current context, so you don't have to explicitly keep track of what context
+you're in.
 
-    The boundaries of an action are indicated by the scope of a ``with:``
-    statement (or substitute).  E.g.::
+This gives you the convenience of global variables (i.e., you don't need to
+pass them around everywhere), but without necessarily sharing the values
+throughout the entire program.  Thus, they are not truly "global".
 
-        with context.Action():
-            # any resources used here will be notified of the
-            # success or failure of this block of code
+Second, contextual values and services are not "variable" either, because they
+can only be set *once* within a given context (rather like variables in a
+"pure functional" language).  This makes them 100% thread-safe, and free of
+"race conditions" even in non-threaded code.
 
-In addition, ``Contextual`` offers some related convenience features:
+To "change" a value, you must create a new context (e.g. using the Python 2.5
+``with:`` statement), and then assign the new value in the new context.  Then,
+when the context is exited, the previous value is restored.
 
-Parameters
-    A ``context.parameter`` is somewhat like a dynamically-scoped variable in
-    languages like Lisp.  ``Contextual`` uses parameters internally to keep
-    track of what services are currently active, but you can also use them
-    directly yourself.
 
-``State`` objects
-    State objects can be used to explicitly manipulate the current context,
-    e.g. to swap out the current state of all parameters, resources, and
-    services, thereby creating either a new blank slate (e.g.
-    for tests) or swapping between multiple independent tasks in the same
-    thread (e.g. to do co-operative multitasking).
+Safe Configuration Using Settings
+=================================
 
-Namespaces
-    Normally, configuration settings and action resources are defined
-    statically in code.  But sometimes you want to create a dynamic namespace
-    where any name could potentially identify a valid setting or resource,
-    possibly with some kind of rules to compute default values when they
-    haven't been explicitly set.  The ``@context.namespace`` decorator lets
-    you turn any setting or resource into such a namespace
+The simplest type of "contextual" value is a ``context.setting``.  Settings
+consist of a default "input" value, and a function for transforming input
+values to the form needed when using the setting.  (For example, you might have
+a setting whose output value is numeric, but which allows string inputs.)  In
+the simplest case, however, a setting function can simply return its input
+unchanged.
 
-Configuration Files
-    ``Contextual`` offers an extensible ``.ini``-style configuration file
-    format that can be used to configure arbitrary settings and resources
-    across any number of modules, thereby giving you global configuration
-    of an entire application from a single configuration system.
+Settings are designed to be a safe replacement for module-level configuration
+variables.  Instead of one program-wide value for a setting, individual code
+paths can safely alter the current configuration temporarily, without affecting
+any other code (including code in other threads) that needs to change or use
+those settings.  Settings are also useful as replacements for rarely-changed
+parameters that must be passed through a lot of function or method calls.
 
-    The loaded configuration is lazy, which means that it doesn't force
-    importing of any of the modules being configured, and doesn't compute any
-    values until they're actually used by the application.  Thus, a
-    configuration file can include optional settings for modules that may not
-    even be installed!
+Let's look at two simple settings::
 
-    Although the ``.ini`` syntax is a fixed property of the configuration
-    loader, the semantics can be extended to create custom section handlers
-    that interpret their contents differently -- and this can even be done
-    from within the ``.ini`` files themselves, because the handlers are looked
-    up using the same configuration services that everything else uses.  
+    >>> @context.setting
+    ... def speed(value=16):
+    ...     """Speed of duplicating CDs"""
+    ...     return float(value)
 
-"with"-statement Emulation and Tools
-    Finally, ``Contextual`` offers a variety of decorators, base classes, and
-    utility functions that are useful for either emulating the "with" statement
-    in older versions of Python, and/or working with it in Python 2.5+.
+    >>> @context.setting
+    ... def resolution(value=300):
+    ...     """DPI for printing CD labels"""
+    ...     return int(value)
+
+Settings look, for all intents and purposes, like normal functions, but they
+are actually specialized objects that wrap the supplied function.
+
+When called, a setting returns its "current" value.  By default, this will be
+the result of applying the original function to its default input value::
+
+    >>> speed()     # returns the default value
+    16.0
+    >>> resolution()
+    300
+
+However, settings can be "changed" in a controlled fashion, by entering a new
+context, and using the ``<<=`` operator to set a new input value.  For
+example::
+
+    >>> with context.new():  # enter a new child context
+    ...     speed <<= 48     # set speed's input to 48 in the current context
+    ...     print speed()
+    ...     print resolution()  # inherits the default from the outer context
+    48.0
+    300
+
+    >>> speed() # outside the block, goes back to the old value
+    16.0
+
+
+Within a given context, however, a setting is guaranteed to only have **one**
+readable value.  You can set it to the *same* (i.e. equal) input value as many
+times as you like::
+
+    >>> speed <<= 16    # setting to the existing value, ok
+    >>> speed <<= 16    # still ok
+
+But you cannot *change* the value, once it has been read in a given context::
     
+    >>> speed <<= 48    # changing the value, not ok!
+    Traceback (most recent call last):
+      ...
+    InputConflict: (speed, 16, 48)
+
+As you can see, we get an ``InputConflict`` error showing that an input value
+of ``16`` for ``speed`` has already been read in the current context, and an
+attempt was made to change it to ``48``.
+
+Remember, settings are not the same thing as "variables": they can only "vary"
+in a controlled way.  If you want to "change" a setting, you must do so in
+a context where that setting has not yet been used.  As you'll see in this next
+example, it's the act of *using* a setting that makes it unchangeable in that
+context::
+
+    >>> with context.new():
+    ...     speed <<= 77    # change as many times as we like, because the
+    ...     speed <<= 99    # input hasn't been *used* yet in this context
+    ...     speed <<= 66
+    ...     print speed()   # but now it can't be changed ever again!
+    ...
+    ...     try:
+    ...         speed <<= 8
+    ...     except context.InputConflict:
+    ...         print "Caught a conflict"
+    ...
+    ...     with context.new():
+    ...         speed <<= 99    # but we can change it in this *new* context!
+    ...         speed <<= 54    # as many times as we like
+    ...         print speed()   # ...until it's read, of course
+    ...
+    ...     print speed()   # back to 66, as we're back in this context
+    ... 
+    ...     with context.new():
+    ...         print speed()   # and of course it's 66 here too, inherited
+    ...                         # from our containing context
+    ...         
+    66.0
+    Caught a conflict
+    54.0
+    66.0
+    66.0
+    
+This "write many until read once" behavior makes it impossible to have
+setting initialization bugs, where one piece of code reads one value for a
+setting, and then another piece of code changes the setting to something else.
+
 
 Creating and Using Services
 ===========================
@@ -166,7 +217,7 @@ You can replace the current instance with another instance, by using the
 the section below on `Support for Python 2.3/2.4`_ for more info)::
 
     >>> with Counter.new():
-    ...     print count is Counter.get()    
+    ...     print count is Counter.get()
     False
 
     >>> count is Counter.get()  # old value is restored
@@ -198,6 +249,22 @@ instances, when retrieved from the class.
 In other words, ``Counter.inc`` and ``Counter.value`` are just
 shorter ways to spell ``Counter.get().inc``, and ``Counter.get().value``.  The
 same shorthand works for getting, setting, or deleting class attributes.
+
+Note, however, that you cannot use this shorthand form when performing
+"in-place" operations such as ``+=``, because this would replace the class
+with the operation's result.  That is, a statement like ``Counter += 1`` would
+delete the ``Counter`` class and replace it with something else!
+
+Therefore, you must always use ``.get()`` before performing an in-place
+operation, e.g.::
+
+    service = MyService.get()
+    service += 42
+
+This will not change the current instance of the service or delete the class,
+but instead will just rebind the variable named ``service`` to point to the
+operation's result.  Even this approach is confusing, however, so it's best
+to just avoid defining or using in-place operators on your service classes.
 
 
 Service Replacements
@@ -285,13 +352,155 @@ you might want.  So you can assemble the configuration of your entire program
 into a single object, and then use a single ``with`` statement to execute your
 program under it.
 
-Or, if you are doing configuration in code, you can stack multiple services,
-settings, etc. in a single ``with context.using(*items):`` statement.
-XXX example
+Another simple way to configure a context's services is to create a new child
+context, and register one or more service factories while inside it::
+
+    >>> with context.new():
+    ...     Counter <<= ExtendedCounter
+    ...     print type(Counter.get())
+    <class 'ExtendedCounter'>
+
+The ``<<=`` operator sets the factory to be used for creating a service
+instance in the current context.  (It has no effect on any other execution
+context.)  The factory can only be set, however, if it hasn't already been used
+in the current context.  For example, in the default context, we had already
+used ``Counter``, so we can't change the factory to ``ExtendedCounter`` there::
+
+    >>> Counter <<= ExtendedCounter
+    Traceback (most recent call last):
+      ...
+    InputConflict: (<class 'Counter'>, <...'ExtendedCounter'>)
+
+Note, by the way, that the factory does not need to be a class.  It can be any
+zero-argument callable, e.g.:
+
+    >>> def a_factory():
+    ...     ctr = Counter()
+    ...     ctr.value = 99
+    ...     return ctr
+
+    >>> with context.new():
+    ...     Counter <<= a_factory
+    ...     print Counter.value
+    99
+
 
 
 Configuration and Settings
 ==========================
+
+XXX Everything from here down is out of date and needs to be rewritten; don't
+    read it unless you want to be confused! XXX
+
+
+Settings
+    ``context.setting`` objects provide thread-safe access to stateless
+    configuration settings.  Settings consist of a default "input" value, and
+    a function for transforming input values to the form needed when using the
+    setting.  (For example, the function might take a factory function as
+    input, and call it to produce the output, or it might convert strings to
+    numeric or date values, etc.)
+
+    Settings can have different input values in different contexts, but once
+    the setting's input or output value has been retrieved or computed in a
+    given context, it can no longer be changed in that context.  This is a
+    major improvement over global variables, as it prevents bugs due to
+    changing settings after another part of the program has already used it.
+
+    Of course, this restriction only applies to a single context; each context
+    can have a different value for any given setting, and it's easy to create
+    a context that inherits its default settings from an existing context (so
+    you don't have to copy the settings you want to keep.
+
+Services
+    Services are like singletons, but have a separate instance for each thread
+    and can easily be replaced as needed for e.g. testing or co-operative
+    multitasking.  Services are created by subclassing ``context.Service``, and
+    the resulting class's ``get()`` classmethod will return the current
+    instance.  Alternative implementations of a service can be defined and used
+    to replace the default implementation in a given context.
+
+    Services are also similar to settings, in that they take an input value
+    (which must be 
+
+    (But as with
+    settings, the choice of replacement cannot be changed in a context where
+    the
+
+    , but as with settings, the choice of
+    implementation cannot be changed within
+
+    Services also work like settings, in that you cannot  whose input value is a class or
+    factory for creating instances of the service, and its
+
+Transaction Resources
+    The ``context.Action`` service manages access to objects that may need to
+    be recycled, saved, or reverted at the completion of an action such as
+    a transaction, command, web request, or other atomic operation.  Requesting
+    a resource (such as a database connection) causes it to be registered with
+    the current ``Action``, so that it will be notified of the success or
+    failure of the action.  This then allows the
+    resource to commit or rollback as appropriate, return connections to
+    connection pools or close them, etc.
+
+    The boundaries of an action are indicated by the scope of a ``with:``
+    statement (or substitute).  E.g.::
+
+        from peak.context import Action
+
+        @Action.resource
+        def db_conn(value="default connection string"):
+            conn = db_open(value)
+            return conn
+
+        with context.Action.new():
+            # any resources used here will be notified of the
+            # success or failure of this block of code
+
+            # for example, the opened db connection will get __enter__
+            # called here:
+            c = db_conn()
+            # and then its __exit__ will be called when the block is finished
+
+In addition, ``Contextual`` offers some related convenience features:
+
+``State`` objects
+    State objects can be used to explicitly manipulate the current context,
+    e.g. to swap out the current state of all settings, resources, and
+    services, thereby creating either a new blank slate (e.g.
+    for tests) or swapping between multiple independent tasks in the same
+    thread (e.g. to do co-operative multitasking).
+
+Registries
+    Normally, configuration settings and action resources are defined
+    statically in code.  But sometimes you want to create a dynamic namespace
+    where any name could potentially identify a valid setting or resource,
+    possibly with some kind of rules to compute default values when they
+    haven't been explicitly set.  The ``registry`` and ``resource_registry``
+    decorators let you create such namespaces for settings and resources.
+
+Configuration Files
+    ``Contextual`` offers an extensible ``.ini``-style configuration file
+    format that can be used to configure arbitrary settings and resources
+    across any number of modules, thereby giving you global configuration
+    of an entire application from a single configuration system.
+
+    The loaded configuration is lazy, which means that it doesn't force
+    importing of any of the modules being configured, and doesn't compute any
+    values until they're actually needed.  Thus, a configuration file can
+    include optional settings for modules that may not even be installed!
+
+    Although the ``.ini`` syntax is a fixed property of the configuration
+    loader, the semantics can be extended to create custom section handlers
+    that interpret their contents differently -- and this can even be done
+    from within the ``.ini`` files themselves, because the handlers are looked
+    up using the same configuration services that everything else uses.
+
+"with"-statement Emulation and Tools
+    Finally, ``Contextual`` offers a variety of decorators, base classes, and
+    utility functions that are useful for either emulating the "with" statement
+    in older versions of Python, and/or working with it in Python 2.5+.
+
 
 
 
@@ -332,7 +541,7 @@ Scope
 
 using, only, State
 
-RuleConflict
+InputConflict
 DynamicRuleError
 
 Action

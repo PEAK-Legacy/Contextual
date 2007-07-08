@@ -147,12 +147,12 @@ becomes active again::
 All this, with no interfaces to declare or register, and no XML or
 configuration files to write.  However, if you *want* to use configuration
 files to select implementations of global services, you can still have them:
-calling ``Counter.current(foo)`` will set the current ``Counter`` to ``foo``,
-so you can just have a configuration file loader set up whatever services you
-want.  You can even take a snapshot of the entire current context and restore
-all the previous values::
+setting ``context.State[Counter] = foo`` will set the current ``Counter`` to
+``foo``, so you can just have a configuration file loader set up whatever
+services you want.  You can even take a snapshot of the entire current context
+and restore all the previous values::
 
-    with context.only():
+    with context.empty():
         # code to read config file and set up services
         # code that uses the configured services
 
@@ -178,13 +178,9 @@ TODO
 ----
 
 0.7
- * ``resource_registry`` testing
-
  * Configuration files
 
- * ``%`` and ``<<`` operators for ServiceClass (or other ways of handling them?)
-
- * Components w/state binding and **kw attrs update on init
+ * Components w/state binding and **kw attrs update on __init__ and .new()
 
 0.8
  * State __enter__ should lock the state to the current thread, w/o __exit__ or
