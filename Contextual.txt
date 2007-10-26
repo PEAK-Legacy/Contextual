@@ -553,9 +553,45 @@ lookup
 
 Support for Python 2.3/2.4
 ==========================
-@manager
-reraise,
-with_
-@call_with
+
+The "with" statement is only available in Python 2.5 and up, but Contextual is
+intended to be usable with Python 2.3 and up.  So, Contextual include a few
+functions that let you emulate most of the "with" statement's functionality
+in Python 2.3 and 2.4.  You should use them in place of the Python 2.5 features
+if you want your code to work on Python 2.3 or 2.4.
+
+Here's a simple translation table::
+
+    Python 2.5+               Python 2.4 (for 2.3, put decorators after funcs)
+    ------------              ------------------------------------------------
+    with x as y:              @context.call_with(x)
+        print y               def do_it(y):
+                                  print y
+
+    with x as y:              z = context.with_(x,f)
+        z = f(y)
+
+    @contextmanager           @context.manager
+    def transacted():         def transacted():
+        begin_txn()               begin_txn()
+        try:                      try:
+            yield                     yield None
+        except:                       context.reraise()
+            abort_txn()           except:
+            raise                     abort_txn()
+        else:                         raise
+            commit_txn()          else:
+                                      commit_txn()
+
+The biggest difference between these constructs (apart from performance) is
+that the "with" statement lets you rebind variables in the surrounding scope,
+because the code in the block is still in the same scope.  Since our emulation
+for Python 2.4 uses functions, they can't rebind variables from the surrounding
+scope, and thus must make do with side effects and/or return values.
+
+Notice also that we allow definition of context managers using generators, much
+like in Python 2.5, but you must *always* call ``context.reraise()`` following
+your ``yield None``, so that any error raised by the "with" block will be
+propagated.  (Unless, of course, you want to suppress it.)
 
 
