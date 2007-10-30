@@ -37,26 +37,28 @@ So, most of us end up stuck between various unpalatable choices:
    threading dependency, and still not having a reasonable way to test or
    configure alternate implementations.  Plus, thread-locals don't really
    support asynchronous programming or co-operative multitasking.  What if
-   somebody wants to use your library under Twisted?
+   somebody wants to use your library under Twisted, and needs private
+   instances for each socket connection?
 
 But now there's a better choice.
 
 The "Contextual" library (``peak.context``) lets you create pseudo-singletons
 and pseudo-global variables that are context-sensitive and easily replaceable.
 They look and feel just like old-fashioned globals and singletons, but because
-they are safely scalable to threads and tasks as well as being replaceable for
-testing or other dynamic contexts, you don't have to worry about what happens
+they are safely scalable to threads and tasks (as well as being replaceable for
+testing or other dynamic contexts), you don't have to worry about what happens
 "later".
 
 Contextual singletons are even better than thread-local variables, because they
 support asynchronous programming with microthreads, coroutines, or frameworks
-like Twisted.  A simple context-switching API lets you instantly change from
-one logical task's context to another.  This just isn't possible with ordinary
-thread-locals.  Meanwhile, "client" code that uses context-sensitive objects
-remains unchanged: the code simply uses whatever the "current" object is
-supposed to be.
+like Twisted.  A simple context-switching API lets you instantly swap out all
+the services and variables from one logical task, with those of another task.
+This just isn't possible with ordinary thread-locals.
 
-And, isn't that all you wanted to do in the first place?
+Meanwhile, "client" code that uses context-sensitive objects remains unchanged:
+the code simply uses whatever the "current" object is supposed to be.
+
+And isn't that all you wanted to do in the first place?
 
 
 Replaceable Singletons
@@ -201,8 +203,12 @@ STATUS
 This package is in active development, but not all features are stable and
 documented.  ``Service`` objects work as advertised, as does the support for
 using "with"-like operations in older versions of Python.  Most of the other
-features haven't been used in any real way yet, and so the designs are still
-subject to change prior to an actual 0.7a1 release.
+features haven't been used (or even documented!) in any real way yet, and so
+the designs are still subject to change prior to an actual 0.7a1 release.
+
+(All the included code is covered by tests, though, so you can always dig
+through them for technical documentation; the developer guide and tutorial
+is just woefully incomplete as yet.)
 
 Currently, Contextual is only available via SVN checkout.
 
