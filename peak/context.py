@@ -60,6 +60,8 @@ class ServiceClass(type):
         if 'get' not in cdict:
             cls.get = staticmethod(classmethod(lookup).__get__(None, cls))
         for k, v in cdict.items():
+            if not isinstance(k, basestring):
+                continue
             if not isinstance(v, (classmethod,staticmethod))and not _ignore(k):
                 redirect_attribute(cls, k, v)
         return cls
@@ -73,8 +75,6 @@ class ServiceClass(type):
 
     def __mod__(cls, expr):
         return 'lambda: '+expr
-
-
 
 
 

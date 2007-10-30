@@ -630,7 +630,11 @@ Service attributes should be settable and deletable, mapped to the instance::
     >>> Dummy.get().foo
     42
 
+Service classes should be able to have non-string keys in their class
+dictionary (so that ``ClassAddOns`` from the "AddOns" package work)::
 
+    >>> class Dummy(context.Service):
+    ...     locals()[42]=99
 
 
 Settings
