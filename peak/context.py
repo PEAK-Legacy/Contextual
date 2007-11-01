@@ -1,6 +1,6 @@
 import sys
 from thread import get_ident
-from peak.util.decorators import rewrap, cache_source
+from peak.util.decorators import rewrap, cache_source, classy, decorate
 
 __all__ = [
     'Service', 'replaces', 'setting', 'InputConflict', 'DynamicRuleError'
@@ -8,36 +8,6 @@ __all__ = [
     'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError',
     'resource_registry',
 ]
-
-def redirect_attribute(cls, name, payload):
-    meta = type(cls)
-    if getattr(meta, '__for_class__', None) is not cls:
-        cls.__class__ = meta = type(meta)(
-            cls.__name__+'Class', (meta,), {'__module__':cls.__module__, '__for_class__':cls}
-        )
-        # XXX activate_attrs(meta)?
-    setattr(meta, name, property(
-        lambda s: getattr(s.get(), name),
-        lambda s,v: setattr(s.get(), name, v),
-        lambda s: delattr(s.get(), name),
-    ))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 _in_place = """__iadd__ __isub__ __imul__ __idiv__ __itruediv__ __ifloordiv__
 __imod__ __ipow__ __ilshift__ __irshift__ __iand__ __ixor__ __ior__""".split()
@@ -53,37 +23,65 @@ def _no_in_place(self, *args):
         " service class"
     )
 
-class ServiceClass(type):
+def _ilshift(cls, factory):
+    State[cls] = factory
+    return cls
 
-    def __new__(meta, name, bases, cdict):
-        cls = super(ServiceClass, meta).__new__(meta, name, bases, cdict)
+def _mod(cls, expr):
+    return 'lambda: '+expr
+
+_std_attrs = dict(
+    [(k,_no_in_place) for k in _in_place], __ilshift__=_ilshift, __mod__=_mod
+)
+
+
+
+
+
+
+def redirect_attribute(cls, name, payload):
+    setattr(type(cls), name, property(
+        lambda s: getattr(s.get(), name),
+        lambda s,v: setattr(s.get(), name, v),
+        lambda s: delattr(s.get(), name),
+    ))
+
+
+class _ClassDelegate(classy):
+    """Type whose attributes/methods are delegated to ``cls.get()``"""
+
+    __slots__ = ()
+
+    get = None  # dummy
+
+    decorate(classmethod)
+    def __class_init__(cls, name, bases, cdict, supr):
+        meta = type(cls)
+        if getattr(meta, '__for_class__', None) is not cls:
+            cls.__class__ = meta = type(meta)(
+                cls.__name__+'Class', (meta,),
+                dict(_std_attrs, __module__=cls.__module__, __for_class__=cls)
+            )
+            # XXX activate_attrs(meta)?
+
+        supr()(cls, name, bases, cdict, supr)
+
         if 'get' not in cdict:
             cls.get = staticmethod(classmethod(lookup).__get__(None, cls))
+
         for k, v in cdict.items():
             if not isinstance(k, basestring):
                 continue
             if not isinstance(v, (classmethod,staticmethod))and not _ignore(k):
                 redirect_attribute(cls, k, v)
-        return cls
-
-    for name in _in_place:
-        locals()[name] = _no_in_place
-        
-    def __ilshift__(cls, factory):
-        State[cls] = factory
-        return cls
-
-    def __mod__(cls, expr):
-        return 'lambda: '+expr
 
 
 
 
 
-class State(object):
+
+class State(_ClassDelegate):
     """A thread's current configuration and state"""
-
-    __metaclass__ = ServiceClass
 
     def __new__(cls, *rules, **attrs):
         return attrs and object.__new__(cls) or empty()
@@ -121,12 +119,13 @@ class State(object):
         raise NotImplementedError   # this method is replaced on each instance
 
 
+
+
+    decorate(staticmethod)
     def get(key=None):
         """Return the current state (no args) or a current rule (w/key)"""
         # this method is replaced later below
         raise NotImplementedError
-
-    get = staticmethod(get)
 
     parent = None
 
@@ -154,6 +153,7 @@ def _swap_exc_info(data):
 def new():
     """Return a new child of the current state"""
     return State.child()
+
 
 
 
@@ -535,11 +535,10 @@ noop = lambda key, rule: rule
 mngr = lambda key, rule: Action.manage(rule())
 call = lambda key, rule: rule()
 
-class Service(object):
+class Service(_ClassDelegate):
     """A replaceable, thread-local singleton"""
 
     __slots__ = ()  # pure mixin class
-    __metaclass__ = ServiceClass
 
     def __default__(cls):
         return cls()

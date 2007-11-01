@@ -35,6 +35,6 @@ setup(
     test_suite = 'test_context',
     packages = PACKAGES,
     namespace_packages = PACKAGES,
-    install_requires = ['DecoratorTools>=1.5']
+    install_requires = ['DecoratorTools>=1.6']
 )
 
