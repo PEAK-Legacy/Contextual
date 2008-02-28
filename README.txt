@@ -210,5 +210,8 @@ the designs are still subject to change prior to an actual 0.7a1 release.
 through them for technical documentation; the developer guide and tutorial
 is just woefully incomplete as yet.)
 
-Currently, Contextual is only available via SVN checkout.
+Source distribution snapshots of Contextual are generated daily, but you can
+also update directly from the `development version`_ in SVN.
+
+.. _development version: svn://svn.eby-sarna.com/svnroot/Contextual#egg=Contextual-dev
 

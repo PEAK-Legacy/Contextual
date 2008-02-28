@@ -26,7 +26,7 @@ setup(
     name=PACKAGE_NAME,
     version=PACKAGE_VERSION,
     url = "http://pypi.python.org/pypi/Contextual",
-    download_url = "svn://svn.eby-sarna.com/svnroot/Contextual#egg=Contextual-dev",
+    download_url = "http://peak.telecommunity.com/snapshots/",
     description='Replace globals with context-safe variables and services',
     long_description = get_description(),
     author="Phillip J. Eby",
