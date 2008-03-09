@@ -170,7 +170,7 @@ context::
     66.0
     
 This "write many until read once" behavior makes it impossible to have
-setting initialization bugs, where one piece of code reads one value for a
+setting initialization bugs where one piece of code reads one value for a
 setting, and then another piece of code changes the setting to something else.
 
 

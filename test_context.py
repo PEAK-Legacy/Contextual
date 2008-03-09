@@ -1,4 +1,4 @@
-import sys
+import sys, unittest
 suites = []
 
 if sys.version>='2.4':
@@ -21,6 +21,46 @@ except NameError:
             return [v[1] for v in d]
         return d
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class TestStateInitialization(unittest.TestCase):
+    
+    def testStateGet(self):
+        from peak.context import State
+        self.assertEqual(State.parent, State.root)
+
+    def testStateLookupInOtherThread(self):
+        from peak.context import State, Service, lookup
+        my_state = State.get()
+        other_state = []
+        def test_other_thread():
+            lookup(Service) # test lookup() path of state creation
+            other_state.append(State.get())
+        from threading import Thread
+        t = Thread(target = test_other_thread)
+        t.start()
+        t.join()
+        state = other_state.pop()
+        self.assertNotEqual(my_state, state)
+        self.assertEqual(state.parent, State.root)
+
+
 def additional_tests():
     import doctest
     import __future__
@@ -31,4 +71,12 @@ def additional_tests():
         optionflags=doctest.ELLIPSIS|doctest.REPORT_ONLY_FIRST_FAILURE,
         globs=globs, *suites
     )
+
+
+
+
+
+
+
+
 

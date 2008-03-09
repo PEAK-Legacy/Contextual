@@ -178,7 +178,7 @@ def _let_there_be_state():
         try:
             state, getRule, lookup, child = states[get_ident()]
         except KeyError:
-            new_state().swap()
+            empty().swap()
             state, getRule, lookup, child = states[get_ident()]
         return lookup(key)
 
@@ -186,7 +186,7 @@ def _let_there_be_state():
         try:
             state, getRule, lookup, child = states[get_ident()]
         except KeyError:
-            new_state().swap()
+            empty().swap()
             state, getRule, lookup, child = states[get_ident()]
         if key is None:
             return state
@@ -571,6 +571,7 @@ class Service(_ClassDelegate):
     new = classmethod(manager(new))
 
 
+
 class Scope(Service):
     """A scope for resources"""
 
@@ -770,10 +771,10 @@ class wildcard(setting):
         parent = self.__namespace__
         if parent.__namespace__:
             func = State.get(parent.__namespace__['*'])
-            prefix = self.__name__.split('.')[-2]+'.'
-            return _prefixer(prefix, func)
-        else:
-            return parent.__function__
+            if func is not None:
+                prefix = self.__name__.split('.')[-2]+'.'
+                return _prefixer(prefix, func)
+        # couldn't find a parent wildcard rule, return None
 
 
 class registry(setting):
@@ -830,13 +831,22 @@ class registry(setting):
 
     def __fallback__(self, inherit, key):
         if self.__namespace__:
+            # Not the root registry, try looking up wildcard rule(s)
             suffix = key.__name__[len(self.__namespace__.__name__)+1:]
-            return State.get(self.__namespace__['*'])(suffix)
-        elif inherit is None:
-            suffix = key.__name__[len(self.__name__)+1:]
-            return self.__function__(suffix)
-        else:
+            finder = State.get(self.__namespace__['*'])
+            if finder is not None:
+                return finder(suffix)
+
+        # No wildcards in registries above me, so try to inherit instead:
+        if inherit is not None:
             return inherit(key)
+
+        # We're in the root state; make sure we're in the root registry too
+        while self.__namespace__: self = self.__namespace__
+
+        # And then invoke the registry function with the suffix
+        suffix = key.__name__[len(self.__name__)+1:]
+        return self.__function__(suffix)
 
     def __setitem__(self, key, value):
         if value is not self[key]:
@@ -847,15 +857,6 @@ class registry(setting):
             return object.__setattr__(self, key, value)
         else:
             self[key] = value
-
-
-
-
-
-
-
-
-
 
 
 class Source(object):

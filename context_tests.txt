@@ -18,7 +18,8 @@ Thread testing utility::
 State Objects
 =============
 
-Separate, ongoing states exist for each thread::
+Separate, ongoing states exist for each thread, with the default state for
+each thread being a child of ``State.root``::
 
     >>> State.get()
     <...State object at ...>
@@ -26,11 +27,16 @@ Separate, ongoing states exist for each thread::
     >>> State.get() is State.get()
     True
 
+    >>> State.parent is State.root
+    True
+
     >>> my_state = State.get()
     >>> def test_other_thread():
     ...     print my_state is State.get()
+    ...     print State.parent is State.root
     >>> run_in_thread(test_other_thread)
     False
+    True
 
 States allow setting and getting rules for values::
 
@@ -895,8 +901,8 @@ registry's wildcard input, and calls it to compute the input for that key::
     >>> foo.bar.__fallback__(None, foo.bar)
     tracing 'bar'
 
-And when a wildcard's fallback is called, it *returns* its parent registry's
-wildcard's input, without calling it::
+And when a wildcard's fallback is called, it returns a callable that can be
+passed a suffix to compute a setting's value::
 
     >>> foo.bar['*'].__fallback__(None, foo.bar.baz)('x')
     tracing 'bar.x'
@@ -909,24 +915,24 @@ wildcard's input, without calling it::
     >>> foo.bar.baz.__fallback__(None, foo.bar.baz)
     tracing 'bar.baz'
 
+When attached to a non-root registry, their fallback is to look up their parent
+wildcard::
 
-When attached to a root registry and invoked in a root context, their fallback
-is to call the registry's default handler::
+    >>> foo['spam.*'].__fallback__(None, foo.bar)('x')
+    tracing 'spam.x'
 
-    >>> dummy['*'].__fallback__(None, foo)('x')
-    looking up x
-    'x'
+The fallback for a wildcard attached to a root registry, however, is ``None``::
+
+    >>> print dummy['*'].__fallback__(None, foo)
+    None
+
+This causes the original target of the lookup to fall back to state-level
+inheritance, or the original function::
 
     >>> dummy.__fallback__(None, foo.bar)
     looking up foo.bar
     'foo.bar'
 
-When attached to a non-root registry, their fallback is to look up their parent
-wildcard
-
-    >>> foo['*'].__fallback__(None, foo.bar)('x')
-    looking up foo.x
-    'foo.x'
 
 Registries can be called, passing in a string key and optionally a default
 value to return in case the key isn't found::
@@ -942,7 +948,6 @@ value to return in case the key isn't found::
     88
 
     >>> dummy('foo')
-    looking up foo
     looking up foo
     'foo'
 
