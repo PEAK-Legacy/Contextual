@@ -3,7 +3,7 @@ from thread import get_ident
 from peak.util.decorators import rewrap, cache_source, classy, decorate
 
 __all__ = [
-    'Service', 'replaces', 'setting', 'InputConflict', 'DynamicRuleError'
+    'Service', 'replaces', 'setting', 'InputConflict', 'DynamicRuleError',
     'State', 'Action', 'resource', 'registry', 'new', 'empty',
     'lookup', 'manager', 'reraise', 'with_', 'call_with', 'ScopeError',
     'resource_registry',
