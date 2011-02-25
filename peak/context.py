@@ -232,7 +232,7 @@ def _let_there_be_state():
                     if inheritedDistances is not None and inherit(key)==rule:
                         distances.setdefault(key, inheritedDistances[key]+1)
                     else:
-                        distances[key] = 0
+                        distances.setdefault(key, 0)
 
             if computing:
                 # Ensure that any value being computed in this thread has a
@@ -797,10 +797,10 @@ class registry(setting):
         try:
             return self.__contents__[key]
         except KeyError:
-            s = self.__dict__[key] = self.__contents__[key] = registry(
+            s = self.__dict__[key] = self.__contents__.setdefault(key, registry(
                 self.__function__, self, self.__name__ + '.' + key,
                 self.__dict__.get('__wrap__')
-            )
+            ))
             return s
 
     def __getattr__(self, key):
